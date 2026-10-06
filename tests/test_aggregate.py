@@ -33,6 +33,14 @@ def test_monthly_median_and_n_obs(ds: xr.Dataset) -> None:
     np.testing.assert_array_equal(m["n_obs"].sel(site="B").values, [2, 0])
 
 
+def test_n_obs_zero_for_month_without_dates(ds: xr.Dataset) -> None:
+    # August has no time step at all -> n_obs must be 0, like a month with only
+    # invalid observations, not a NaN cast to int
+    gap = ds.isel(time=[0]).assign_coords(time=pd.to_datetime(["2023-09-02"]))
+    m = aggregate_time(xr.concat([ds, gap], "time"), "1MS", "median")
+    np.testing.assert_array_equal(m["n_obs"].sel(site="B").values, [2, 0, 0, 1])
+
+
 def test_monthly_mean(ds: xr.Dataset) -> None:
     m = aggregate_time(ds, "1MS", "mean")
     np.testing.assert_allclose(m["red"].sel(site="A").values, [0.2, 0.7], rtol=1e-6)

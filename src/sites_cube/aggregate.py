@@ -17,7 +17,9 @@ def aggregate_time(ds: xr.Dataset, freq: str, reducer: str) -> xr.Dataset:
     valid = ds.to_dataarray("band").notnull().all("band")
     masked = ds.where(valid)
     reduced = getattr(masked.resample(time=freq), reducer)(skipna=True)
-    n_obs = valid.resample(time=freq).sum().astype("int32")
+    # periods without any time step come back as NaN; casting that to int would
+    # yield INT32_MIN, so they get 0 like periods with only invalid observations
+    n_obs = valid.resample(time=freq).sum().fillna(0).astype("int32")
     return reduced.assign(n_obs=n_obs)
 
 
