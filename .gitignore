@@ -4,5 +4,4 @@ info.md
 .ruff_cache
 .venv
 out
-data/*
-!data/.gitkeep
+data/*.tif
