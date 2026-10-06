@@ -15,10 +15,10 @@ offset: 0.0
 harmonize_s2_offset: true  # subtract 1000 DN for processing baseline >= 04.00 (like GEE S2_SR_HARMONIZED)
 
 time:
-  start: "2017-01-01"
-  end: "2025-12-31"
+  start: "2020-01-01"
+  end: "2023-12-31"
 
-max_cloud_cover: 80  # eo:cloud_cover scene filter in %, null = off
+max_cloud_cover: 30  # eo:cloud_cover scene filter in %, null = off
 
 sites:
   path: data/E-Sites.gpkg
@@ -34,6 +34,13 @@ load:
 aggregate:
   freq: 1MS
   reducer: median  # median | mean | min | max | std | first | last
+
+dask:
+  distributed: true     # true = LocalCluster (processes), false = threaded scheduler
+  num_threads: null      # threaded scheduler only, null = number of CPU cores
+  n_workers: 4           # LocalCluster only
+  threads_per_worker: 4  # LocalCluster only
+  memory_limit: auto     # per worker, e.g. 4GiB
 
 count_only: false  # only search + report collection size, no pixel loading
 out_dir: out

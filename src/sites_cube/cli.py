@@ -1,7 +1,10 @@
 import sys
 from pathlib import Path
 
+import odc.stac
+
 from sites_cube import aggregate, extract, stac
+from sites_cube.compute import dask_context
 from sites_cube.config import load_config
 from sites_cube.sites import read_sites
 
@@ -48,15 +51,18 @@ def main() -> None:
         return
 
     print(f"\nloading {len(items)} items at {len(sites)} sites ...")
-    raw = extract.load_points(
-        items,
-        dict(cfg.bands),
-        sites,
-        cfg.load.crs,
-        cfg.load.resolution,
-        cfg.load.buffer_m,
-        dict(cfg.load.chunks),
-    )
+    # GDAL cloud settings; odc captures them into the task graph, so workers get them too
+    odc.stac.configure_rio(cloud_defaults=True)
+    with dask_context(cfg.dask):
+        raw = extract.load_points(
+            items,
+            dict(cfg.bands),
+            sites,
+            cfg.load.crs,
+            cfg.load.resolution,
+            cfg.load.buffer_m,
+            dict(cfg.load.chunks),
+        )
     refl = extract.to_reflectance(
         raw, cfg.nodata, cfg.scale, cfg.offset, cfg.harmonize_s2_offset
     )

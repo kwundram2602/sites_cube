@@ -7,7 +7,9 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "bokeh>=3.1.0",
     "dask>=2026.8.0",
+    "distributed>=2026.8.0",
     "geopandas>=1.2.0",
     "odc-stac>=0.5.3",
     "omegaconf>=2.3.1",

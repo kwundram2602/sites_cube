@@ -5,3 +5,4 @@ info.md
 .venv
 out
 data/*.tif
+**/__pycache__/
