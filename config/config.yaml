@@ -1,0 +1,39 @@
+stac:
+  url: https://planetarycomputer.microsoft.com/api/stac/v1
+  sign: planetary_computer  # null for endpoints without URL signing
+
+collection: sentinel-2-l2a
+# alias -> asset key, swap per collection
+bands:
+  red: B04
+  green: B03
+  blue: B02
+nodata: 0
+# reflectance = (DN - s2_offset) * scale + offset
+scale: 0.0001
+offset: 0.0
+harmonize_s2_offset: true  # subtract 1000 DN for processing baseline >= 04.00 (like GEE S2_SR_HARMONIZED)
+
+time:
+  start: "2017-01-01"
+  end: "2025-12-31"
+
+max_cloud_cover: 80  # eo:cloud_cover scene filter in %, null = off
+
+sites:
+  path: data/E-Sites.gpkg
+  layer: esites
+  id_field: name
+
+load:
+  crs: EPSG:32632
+  resolution: 10
+  buffer_m: 50
+  chunks: {x: 2048, y: 2048}
+
+aggregate:
+  freq: 1MS
+  reducer: median  # median | mean | min | max | std | first | last
+
+count_only: false  # only search + report collection size, no pixel loading
+out_dir: out
