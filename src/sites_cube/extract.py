@@ -3,13 +3,17 @@ from typing import Literal
 import geopandas as gpd
 import numpy as np
 import odc.stac
+import pandas as pd
 import pystac
 import xarray as xr
+
+from sites_cube.landsat import QA_VARS
 
 S2_BASELINE_OFFSET_DN = 1000
 S2_BASELINE = (
     "s2_processing_baseline"  # odc.stac name of property s2:processing_baseline
 )
+PLATFORM = "platform"
 
 
 def load_points(
@@ -63,7 +67,23 @@ def load_cube(
     names = {v: k for k, v in bands.items()}
     if baseline:
         names[baseline.replace(":", "_")] = S2_BASELINE
-    return ds.rename(names)
+    # 4. platform of every time slice, e.g. to pick the Landsat sensor
+    return ds.rename(names).assign_coords(
+        {PLATFORM: ("time", platforms_by_time(items, ds["time"].to_numpy()))}
+    )
+
+
+def platforms_by_time(items: pystac.ItemCollection, times: np.ndarray) -> list[str]:
+    """Platform of each time slice, matched via the item datetime (one item per slice).
+
+    Not loaded via odc `with_properties`, which only yields numeric variables.
+    """
+    by_time = {
+        pd.Timestamp(i.datetime).tz_convert(None): i.properties["platform"]
+        for i in items
+        if i.datetime is not None
+    }
+    return [by_time[pd.Timestamp(t)] for t in times]
 
 
 def sample_points(ds: xr.Dataset, sites: gpd.GeoDataFrame, crs: str) -> xr.Dataset:
@@ -106,9 +126,12 @@ def to_reflectance(
     offset: float,
     harmonize_s2_offset: bool,
 ) -> xr.Dataset:
-    """Mask nodata, remove S2 baseline offset, apply scale/offset."""
-    # 1. spectral bands only, the baseline variable is metadata
-    bands = [v for v in ds.data_vars if v != S2_BASELINE]
+    """Mask nodata, remove S2 baseline offset, apply scale/offset.
+
+    Landsat QA variables are passed through unchanged for `landsat.mask_landsat`.
+    """
+    # 1. spectral bands only, the baseline and QA variables are metadata
+    bands = [v for v in ds.data_vars if v != S2_BASELINE and v not in QA_VARS]
     # 2. float so NaN can mark nodata pixels (e.g. outside the tile footprint)
     out = ds[bands].astype("float32").where(ds[bands] != nodata)
     if harmonize_s2_offset and S2_BASELINE in ds:
@@ -118,15 +141,18 @@ def to_reflectance(
         # 4. values at/below the offset are invalid after harmonisation
         out = out.where(out > 0)
     # 5. DN -> surface reflectance
-    return out * scale + offset
+    out = out * scale + offset
+    return out.assign({v: ds[v] for v in QA_VARS if v in ds})
 
 
 def fuse_solar_day(ds: xr.Dataset, lon: float) -> xr.Dataset:
     """Merge items of the same solar day (overlapping tiles) by nanmean."""
     # 1. UTC -> local solar time (15 deg longitude = 1 h), then cut to the date
     solar_day = (ds["time"] + np.timedelta64(int(lon / 15 * 3600), "s")).dt.floor("D")
-    # 2. average all items of one day; a site outside one tile is NaN there and
+    # 2. platform is a string per item and has no mean, drop it
+    ds = ds.drop_vars(PLATFORM, errors="ignore")
+    # 3. average all items of one day; a site outside one tile is NaN there and
     #    simply takes the value of the other tile
     fused = ds.groupby(solar_day.rename("day")).mean(skipna=True)
-    # 3. restore the `time` dim name expected downstream
+    # 4. restore the `time` dim name expected downstream
     return fused.rename(day="time")

@@ -5,7 +5,15 @@ import pandas as pd
 import pystac
 import xarray as xr
 
-from sites_cube.extract import S2_BASELINE, _baseline_property, to_reflectance
+from sites_cube.extract import (
+    PLATFORM,
+    S2_BASELINE,
+    _baseline_property,
+    fuse_solar_day,
+    platforms_by_time,
+    to_reflectance,
+)
+from sites_cube.landsat import QA_PIXEL
 
 SCALE = 0.0001
 
@@ -75,3 +83,38 @@ def test_baseline_property_per_catalogue() -> None:
     assert _baseline_property(pystac.ItemCollection([pc])) == "s2:processing_baseline"
     assert _baseline_property(pystac.ItemCollection([cdse])) == "processing:version"
     assert _baseline_property(pystac.ItemCollection([landsat])) is None
+
+
+def test_platforms_by_time_matches_item_datetime() -> None:
+    items = [
+        pystac.Item(
+            id=platform,
+            geometry=None,
+            bbox=None,
+            datetime=datetime(2023, 6, 1, 10, minute, 1, 123456, tzinfo=UTC),
+            properties={"platform": platform},
+        )
+        for platform, minute in [("landsat-7", 5), ("landsat-8", 30)]
+    ]
+    times = np.array(
+        ["2023-06-01T10:30:01.123456", "2023-06-01T10:05:01.123456"],
+        dtype="datetime64[ns]",
+    )
+    assert platforms_by_time(pystac.ItemCollection(items), times) == [
+        "landsat-8",
+        "landsat-7",
+    ]
+
+
+def test_qa_vars_pass_through_reflectance() -> None:
+    ds = _ds([10000, 0], None)
+    ds[QA_PIXEL] = (("time", "site"), np.array([[21824], [1]], dtype="uint16"))
+    out = to_reflectance(ds, 0, 0.0000275, -0.2, False)
+    xr.testing.assert_identical(out[QA_PIXEL], ds[QA_PIXEL])
+    assert out["red"].dtype == np.float32
+
+
+def test_fuse_solar_day_drops_platform() -> None:
+    ds = _ds([1, 2], None).astype("float32")
+    ds = ds.assign_coords({PLATFORM: ("time", ["landsat-7", "landsat-8"])})
+    assert PLATFORM not in fuse_solar_day(ds, 10.0).coords

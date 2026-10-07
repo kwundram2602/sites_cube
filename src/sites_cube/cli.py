@@ -4,10 +4,14 @@ from pathlib import Path
 from typing import Any
 
 import odc.stac
+import xarray as xr
+from omegaconf import DictConfig
 
 from sites_cube import aggregate, extract, raster, stac
 from sites_cube.compute import dask_context
 from sites_cube.config import load_config
+from sites_cube.harmonize import harmonize_landsat
+from sites_cube.landsat import DEFAULT_QA_PIXEL_FLAGS, QA_VARS, mask_landsat
 from sites_cube.sites import read_sites
 
 
@@ -72,9 +76,13 @@ def main() -> None:
     # it (CDSE reads then went to AWS); GDAL falls back to process env vars, which
     # the LocalCluster workers inherit
     os.environ.update(gdal_opts)
+    bands = dict(cfg.bands)
+    landsat_cfg = cfg.get("landsat")
+    if landsat_cfg and landsat_cfg.qa_mask:
+        bands |= {v: v for v in QA_VARS}
     load_args = (
         items,
-        dict(cfg.bands),
+        bands,
         sites,
         cfg.load.crs,
         cfg.load.resolution,
@@ -89,10 +97,7 @@ def main() -> None:
             raw = extract.sample_points(cube, sites, cfg.load.crs)
         else:
             raw = extract.load_points(*load_args)
-    refl = extract.to_reflectance(
-        raw, cfg.nodata, cfg.scale, cfg.offset, cfg.harmonize_s2_offset
-    )
-    daily = extract.fuse_solar_day(refl, lon)
+    daily = to_daily(raw, cfg, lon)
     aggregate.to_long(daily).to_parquet(out_dir / f"raw_{name}.parquet", index=False)
 
     reducer = cfg.aggregate.reducer
@@ -104,12 +109,30 @@ def main() -> None:
 
     if write_raster:
         # same chain as the points: reflectance -> solar-day mean -> period reducer
-        refl_cube = extract.to_reflectance(
-            cube, cfg.nodata, cfg.scale, cfg.offset, cfg.harmonize_s2_offset
-        )
-        periods = aggregate.aggregate_time(
-            extract.fuse_solar_day(refl_cube, lon), freq, reducer
-        )
+        periods = aggregate.aggregate_time(to_daily(cube, cfg, lon), freq, reducer)
         raster_dir = out_dir / name / f"raster_{reducer}_{freq}"
         tifs = raster.write_periods(periods, cube.odc.geobox, raster_dir)
         print(f"wrote {len(tifs)} GeoTIFFs to {raster_dir}")
+
+
+def to_daily(raw: xr.Dataset, cfg: DictConfig, lon: float) -> xr.Dataset:
+    """DN -> reflectance -> Landsat QA mask and harmonisation -> solar-day mean."""
+    refl = extract.to_reflectance(
+        raw, cfg.nodata, cfg.scale, cfg.offset, cfg.harmonize_s2_offset
+    )
+    landsat_cfg = cfg.get("landsat")
+    if landsat_cfg and landsat_cfg.qa_mask:
+        refl = mask_landsat(
+            refl,
+            qa_pixel_flags=landsat_cfg.get("qa_pixel_flags", DEFAULT_QA_PIXEL_FLAGS),
+            saturation=landsat_cfg.get("mask_saturation", True),
+        )
+    if landsat_cfg and landsat_cfg.harmonize:
+        refl = harmonize_landsat(
+            refl,
+            target=landsat_cfg.harmonize,
+            method=landsat_cfg.harmonize_method,
+            out_of_range=landsat_cfg.out_of_range,
+            tm_as_etm=landsat_cfg.get("tm_as_etm", True),
+        )
+    return extract.fuse_solar_day(refl, lon)

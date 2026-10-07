@@ -24,7 +24,7 @@ harmonize_s2_offset: true  # subtract 1000 DN for processing baseline >= 04.00 (
 
 time:
   start: "2023-06-01"
-  end: "2023-06-30"
+  end: "2023-06-15"
 
 max_cloud_cover: 20  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
 
@@ -40,7 +40,7 @@ load:
   chunks: {x: 2048, y: 2048}
 
 aggregate:
-  freq: 1MS
+  freq: 1D
   reducer: median  # median | mean | min | max | std | first | last
 
 dask:

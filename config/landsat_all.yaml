@@ -4,7 +4,8 @@ stac:
   gdal: null  # extra GDAL config options for reading assets, e.g. S3 endpoint
 
 collection: landsat-c2-l2
-platforms: [landsat-8, landsat-9]  # collection also holds Landsat 4/5/7
+# TM (4/5), ETM+ (7), OLI (8/9); MSS (1-3) is not in landsat-c2-l2
+platforms: [landsat-4, landsat-5, landsat-7, landsat-8, landsat-9]
 # alias -> asset key, swap per collection
 bands:  # common names as aliases, needed for the Landsat QA mask and harmonisation
   blue: blue
@@ -21,18 +22,19 @@ harmonize_s2_offset: false  # S2 only
 landsat:
   qa_mask: true          # load qa_pixel/qa_radsat; mask fill (always), the flags below, SR outside [0,1]
   # QA_PIXEL flags masked in all bands: dilated_cloud | cirrus (OLI only) | cloud | cloud_shadow | snow
-  # all five = filtering of Roy et al. 2016; harmonised snow pixels lie outside the fitted data
+  # all five = filtering of Roy et al. 2016;
   qa_pixel_flags: [dilated_cloud, cirrus, cloud, cloud_shadow, snow]
   mask_saturation: true  # QA_RADSAT: saturated band only, ETM+ dropped / OLI occluded pixel all bands
   harmonize: oli         # oli | etm | null, ETM+/TM <-> OLI after Roy et al. 2016, Table 2
   harmonize_method: ols  # ols (means, composites) | rma (thresholds, distributions)
   out_of_range: nan      # nan | clip | keep, for transformed values outside [0,1]
+  tm_as_etm: true        # TM is not in the paper, transform it with the ETM+ coefficients (warns)
 
 time:
-  start: "2023-06-01"
-  end: "2023-06-30"
+  start: "2009-07-01"
+  end: "2010-09-30"
 
-max_cloud_cover: 20  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
+max_cloud_cover: 60  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
 
 sites:
   path: data/E-Sites.gpkg
@@ -46,7 +48,7 @@ load:
   chunks: {x: 2048, y: 2048}
 
 aggregate:
-  freq: 1D # 1D | 1MS | 1M | 1Y
+  freq: 1MS # 1D | 1MS | 1M | 1Y
   reducer: median  # median | mean | min | max | std | first | last
 
 dask:
@@ -57,7 +59,7 @@ dask:
   memory_limit: auto     # per worker, e.g. 4GiB
 
 raster:
-  enabled: true  # also write the reduced scenes over the sites window as GeoTIFF, one per aggregate.freq period
+  enabled: true  # one GeoTIFF per month over ~44 years would be large; enable for shorter periods
 
 count_only: false  # only search + report collection size, no pixel loading
 out_dir: out
