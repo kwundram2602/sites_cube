@@ -4,7 +4,7 @@ import pystac
 from shapely.geometry import box, mapping
 
 from sites_cube.stac import (
-    build_query,
+    build_filter,
     cloud_cover_property,
     dedupe_items,
     items_table,
@@ -74,20 +74,65 @@ def test_grid_code_tiles_are_not_merged() -> None:
     assert set(items_table(unique, lon=10.0)["tile"]) == {"32UPU", "32UQU"}
 
 
-def test_query_s2_cloud_only() -> None:
-    assert build_query("sentinel-2-l2a", 30, None) == {"eo:cloud_cover": {"lt": 30}}
-
-
-def test_query_landsat_uses_land_cloud_cover_and_platforms() -> None:
-    assert build_query("landsat-c2-l2", 30, ["landsat-8", "landsat-9"]) == {
-        "landsat:cloud_cover_land": {"lt": 30},
-        "platform": {"in": ["landsat-8", "landsat-9"]},
+def test_filter_s2_cloud_only() -> None:
+    assert build_filter("sentinel-2-l2a", 30, None) == {
+        "op": "<",
+        "args": [{"property": "eo:cloud_cover"}, 30],
     }
 
 
-def test_query_without_filters_is_none() -> None:
-    assert build_query("landsat-c2-l2", None, None) is None
-    assert build_query("landsat-c2-l2", None, []) is None
+def test_filter_landsat_uses_land_cloud_cover_and_platforms() -> None:
+    assert build_filter("landsat-c2-l2", 30, ["landsat-8", "landsat-9"]) == {
+        "op": "and",
+        "args": [
+            {"op": "<", "args": [{"property": "landsat:cloud_cover_land"}, 30]},
+            {
+                "op": "in",
+                "args": [{"property": "platform"}, ["landsat-8", "landsat-9"]],
+            },
+        ],
+    }
+
+
+def test_filter_without_filters_is_none() -> None:
+    assert build_filter("landsat-c2-l2", None, None) is None
+    assert build_filter("landsat-c2-l2", None, []) is None
+
+
+def test_cdse_reprocessed_duplicate_keeps_newest_processing() -> None:
+    # CDSE: baseline in processing:version, generation time in processing:datetime
+    tile = box(9, 50, 10, 51)
+
+    def cdse(id_: str, version: str, generated: str) -> pystac.Item:
+        return _item(
+            id_,
+            tile,
+            **{
+                "constellation": "sentinel-2",
+                "grid:code": "MGRS-32UNC",
+                "processing:version": version,
+                "processing:datetime": generated,
+            },
+        )
+
+    items = [
+        # id order would pick "z_old", so the properties must decide
+        cdse("z_old", "05.10", "2024-09-10T11:17:18Z"),
+        cdse("a_new", "05.10", "2024-09-26T22:09:31Z"),
+        cdse("z_older_baseline", "05.09", "2024-12-01T00:00:00Z"),
+    ]
+    unique = dedupe_items(pystac.ItemCollection(items))
+    assert _ids(unique) == {"a_new"}
+    assert items_table(unique, lon=10.0)["processing_baseline"].tolist() == ["05.10"]
+
+
+def test_processing_version_of_non_s2_is_no_baseline() -> None:
+    item = _item("ls", box(9, 50, 10, 51), **{"processing:version": "02.00"})
+    assert (
+        items_table(pystac.ItemCollection([item]), lon=10.0)["processing_baseline"]
+        .isna()
+        .all()
+    )
 
 
 def test_unknown_collection_falls_back_to_eo_cloud_cover() -> None:

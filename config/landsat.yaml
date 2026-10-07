@@ -1,6 +1,7 @@
 stac:
   url: https://planetarycomputer.microsoft.com/api/stac/v1
   sign: planetary_computer  # null for endpoints without URL signing
+  gdal: null  # extra GDAL config options for reading assets, e.g. S3 endpoint
 
 collection: landsat-c2-l2
 platforms: [landsat-8, landsat-9]  # collection also holds Landsat 4/5/7
@@ -17,9 +18,9 @@ harmonize_s2_offset: false  # S2 only
 
 time:
   start: "2023-06-01"
-  end: "2023-08-31"
+  end: "2023-06-30"
 
-max_cloud_cover: 30  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
+max_cloud_cover: 20  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
 
 sites:
   path: data/E-Sites.gpkg
@@ -33,7 +34,7 @@ load:
   chunks: {x: 2048, y: 2048}
 
 aggregate:
-  freq: 1MS
+  freq: 1D # 1D | 1MS | 1M | 1Y
   reducer: median  # median | mean | min | max | std | first | last
 
 dask:
@@ -44,7 +45,7 @@ dask:
   memory_limit: auto     # per worker, e.g. 4GiB
 
 raster:
-  enabled: false  # also write the reduced scenes over the sites window as GeoTIFF, one per aggregate.freq period
+  enabled: true  # also write the reduced scenes over the sites window as GeoTIFF, one per aggregate.freq period
 
 count_only: false  # only search + report collection size, no pixel loading
 out_dir: out

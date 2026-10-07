@@ -6,9 +6,22 @@ import pandas as pd
 import planetary_computer
 import pystac
 import pystac_client
+from pystac_client.stac_api_io import StacApiIO
 from shapely.geometry import mapping, shape
+from urllib3 import Retry
 
 SIGNERS = {"planetary_computer": planetary_computer.sign_inplace}
+# retry rate limits (CDSE answers 429) and transient server errors with
+# exponential backoff, honouring Retry-After; POST searches are retried too
+RETRY = Retry(
+    total=8,
+    backoff_factor=2,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=None,
+    respect_retry_after_header=True,
+)
+# items per search page, fewer requests than the server default
+PAGE_SIZE = 100
 # share of an item's footprint not covered by newer items of the same scene
 # above which it counts as a separate datastrip part, not a reprocessing
 MIN_NEW_AREA = 0.05
@@ -26,19 +39,34 @@ def cloud_cover_property(collection: str) -> str:
 
 def open_client(url: str, sign: str | None) -> pystac_client.Client:
     modifier = SIGNERS[sign] if sign else None
-    return pystac_client.Client.open(url, modifier=modifier)
+    return pystac_client.Client.open(
+        url, modifier=modifier, stac_io=StacApiIO(max_retries=RETRY)
+    )
 
 
-def build_query(
+def build_filter(
     collection: str, max_cloud_cover: float | None, platforms: list[str] | None
 ) -> dict | None:
-    """STAC `query` filter for scene cloud cover and platforms, None if unfiltered."""
-    query = {}
+    """CQL2-JSON filter for scene cloud cover and platforms, None if unfiltered.
+
+    CQL2 instead of the `query` extension: CDSE rejects `query` with `in`.
+    """
+    args = []
     if max_cloud_cover is not None:
-        query[cloud_cover_property(collection)] = {"lt": max_cloud_cover}
+        args.append(
+            {
+                "op": "<",
+                "args": [
+                    {"property": cloud_cover_property(collection)},
+                    max_cloud_cover,
+                ],
+            }
+        )
     if platforms:
-        query["platform"] = {"in": list(platforms)}
-    return query or None
+        args.append({"op": "in", "args": [{"property": "platform"}, list(platforms)]})
+    if not args:
+        return None
+    return args[0] if len(args) == 1 else {"op": "and", "args": args}
 
 
 def search_items(
@@ -52,12 +80,13 @@ def search_items(
 ) -> pystac.ItemCollection:
     """Search all items intersecting the convex hull of the sites."""
     aoi = sites.to_crs(4326).union_all().convex_hull
-    query = build_query(collection, max_cloud_cover, platforms)
     search = client.search(
         collections=[collection],
         intersects=mapping(aoi),
         datetime=f"{start}/{end}",
-        query=query,
+        filter=build_filter(collection, max_cloud_cover, platforms),
+        filter_lang="cql2-json",
+        limit=PAGE_SIZE,
     )
     return search.item_collection()
 
@@ -93,11 +122,17 @@ def dedupe_items(items: pystac.ItemCollection) -> pystac.ItemCollection:
 
 def _rank(item: pystac.Item) -> tuple[float, str, str]:
     p = item.properties
-    return (
-        float(p.get("s2:processing_baseline") or 0),
-        p.get("s2:generation_time", ""),
-        item.id,
-    )
+    generated = p.get("s2:generation_time") or p.get("processing:datetime") or ""
+    return (float(_baseline(p) or 0), generated, item.id)
+
+
+def _baseline(p: dict) -> str | None:
+    """S2 processing baseline, PC/Earth Search (`s2:`) or CDSE (`processing:version`)."""
+    if "s2:processing_baseline" in p:
+        return p["s2:processing_baseline"]
+    if p.get("constellation") == "sentinel-2":
+        return p.get("processing:version")
+    return None
 
 
 def _tile(item: pystac.Item) -> str | None:
@@ -132,7 +167,7 @@ def items_table(
                 "tile": _tile(item),
                 "orbit": p.get("sat:relative_orbit"),
                 "cloud_cover": p.get(cloud_property),
-                "processing_baseline": p.get("s2:processing_baseline"),
+                "processing_baseline": _baseline(p),
             }
         )
     df = pd.DataFrame(rows)

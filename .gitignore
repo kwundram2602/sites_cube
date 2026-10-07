@@ -6,3 +6,5 @@ info.md
 out
 data/*.tif
 **/__pycache__/
+.env
+.claudeignore

@@ -1,8 +1,11 @@
+from datetime import UTC, datetime
+
 import numpy as np
 import pandas as pd
+import pystac
 import xarray as xr
 
-from sites_cube.extract import S2_BASELINE, to_reflectance
+from sites_cube.extract import S2_BASELINE, _baseline_property, to_reflectance
 
 SCALE = 0.0001
 
@@ -53,3 +56,22 @@ def test_landsat_scale_and_offset() -> None:
     red = to_reflectance(ds, 0, 0.0000275, -0.2, False)["red"].sel(site="A").values
     np.testing.assert_allclose(red[[0, 2]], [0.075, -0.0075], rtol=1e-5)
     assert np.isnan(red[1])
+
+
+def _props_item(**props) -> pystac.Item:
+    return pystac.Item(
+        id="i",
+        geometry=None,
+        bbox=None,
+        datetime=datetime(2023, 6, 1, tzinfo=UTC),
+        properties=props,
+    )
+
+
+def test_baseline_property_per_catalogue() -> None:
+    pc = _props_item(**{"s2:processing_baseline": "05.10"})
+    cdse = _props_item(**{"constellation": "sentinel-2", "processing:version": "05.10"})
+    landsat = _props_item(**{"processing:version": "02.00"})
+    assert _baseline_property(pystac.ItemCollection([pc])) == "s2:processing_baseline"
+    assert _baseline_property(pystac.ItemCollection([cdse])) == "processing:version"
+    assert _baseline_property(pystac.ItemCollection([landsat])) is None

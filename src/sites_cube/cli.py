@@ -1,5 +1,7 @@
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import odc.stac
 
@@ -60,8 +62,16 @@ def main() -> None:
         return
 
     print(f"\nloading {len(items)} items at {len(sites)} sites ...")
-    # GDAL cloud settings; odc captures them into the task graph, so workers get them too
-    odc.stac.configure_rio(cloud_defaults=True)
+    # GDAL cloud settings plus per-catalogue options (e.g. CDSE S3 endpoint);
+    # odc captures them into the task graph, so workers get them too
+    gdal_opts: dict[str, Any] = {
+        k: str(v) for k, v in (cfg.stac.get("gdal") or {}).items()
+    }
+    odc.stac.configure_rio(cloud_defaults=True, **gdal_opts)
+    # the rasterio env is thread-local and some worker threads open files without
+    # it (CDSE reads then went to AWS); GDAL falls back to process env vars, which
+    # the LocalCluster workers inherit
+    os.environ.update(gdal_opts)
     load_args = (
         items,
         dict(cfg.bands),
@@ -87,9 +97,9 @@ def main() -> None:
 
     reducer = cfg.aggregate.reducer
     freq = cfg.aggregate.freq
-    monthly = aggregate.aggregate_time(daily, freq, reducer)
-    site_dir = out_dir / name / f"monthly_{reducer}"
-    paths = aggregate.write_per_site(monthly, site_dir)
+    reduced = aggregate.aggregate_time(daily, freq, reducer)
+    site_dir = out_dir / name / f"sites_{reducer}_{freq}"
+    paths = aggregate.write_per_site(reduced, site_dir)
     print(f"wrote {len(paths)} site CSVs to {site_dir}")
 
     if write_raster:

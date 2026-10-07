@@ -43,6 +43,7 @@ def load_cube(
     """Lazy (time, y, x) cube over the sites bbox, one time slice per item."""
     # 1. sites into the target grid CRS, their extent defines the load window
     xmin, ymin, xmax, ymax = sites.to_crs(crs).total_bounds
+    baseline = _baseline_property(items)
     # 2. lazy (dask) cube over the sites bbox; nothing is read from the COGs yet
     ds = odc.stac.load(
         items,
@@ -56,12 +57,13 @@ def load_cube(
         chunks=chunks,
         # per-item baseline as variable (time,), needed for the S2 offset correction;
         # float so "05.10" compares numerically against 4.0
-        with_properties=[{"key": "s2:processing_baseline", "dtype": "float32"}]
-        if _is_s2(items)
-        else None,
+        with_properties=[{"key": baseline, "dtype": "float32"}] if baseline else None,
     )
-    # 3. asset keys -> config aliases (B04 -> red)
-    return ds.rename({v: k for k, v in bands.items()})
+    # 3. asset keys -> config aliases (B04 -> red), baseline -> fixed name
+    names = {v: k for k, v in bands.items()}
+    if baseline:
+        names[baseline.replace(":", "_")] = S2_BASELINE
+    return ds.rename(names)
 
 
 def sample_points(ds: xr.Dataset, sites: gpd.GeoDataFrame, crs: str) -> xr.Dataset:
@@ -82,9 +84,19 @@ def sample_points(ds: xr.Dataset, sites: gpd.GeoDataFrame, crs: str) -> xr.Datas
     )
 
 
-def _is_s2(items: pystac.ItemCollection) -> bool:
-    # only S2 items carry a processing baseline; requesting it for others would fail
-    return any("s2:processing_baseline" in i.properties for i in items)
+def _baseline_property(items: pystac.ItemCollection) -> str | None:
+    """Item property holding the S2 processing baseline, None for non-S2 items.
+
+    PC/Earth Search use `s2:processing_baseline`, CDSE `processing:version`;
+    requesting a property the items lack would fail.
+    """
+    for i in items:
+        p = i.properties
+        if "s2:processing_baseline" in p:
+            return "s2:processing_baseline"
+        if p.get("constellation") == "sentinel-2" and "processing:version" in p:
+            return "processing:version"
+    return None
 
 
 def to_reflectance(
