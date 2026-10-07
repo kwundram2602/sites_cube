@@ -2,25 +2,24 @@ stac:
   url: https://planetarycomputer.microsoft.com/api/stac/v1
   sign: planetary_computer  # null for endpoints without URL signing
 
-collection: sentinel-2-l2a
-platforms: null  # e.g. [sentinel-2a, sentinel-2b], null = all platforms of the collection
+collection: landsat-c2-l2
+platforms: [landsat-8, landsat-9]  # collection also holds Landsat 4/5/7
 # alias -> asset key, swap per collection
 bands:
-  red: B04
-  green: B03
-  blue: B02
+  red: red
+  green: green
+  blue: blue
 nodata: 0
-# "s2_offset only for baseline ≥ 04.00".
-# reflectance = (DN - s2_offset) * scale + offset
-scale: 0.0001
-offset: 0.0
-harmonize_s2_offset: true  # subtract 1000 DN for processing baseline >= 04.00 (like GEE S2_SR_HARMONIZED)
+# reflectance = DN * scale + offset (Collection 2 Level-2 SR)
+scale: 0.0000275
+offset: -0.2
+harmonize_s2_offset: false  # S2 only
 
 time:
-  start: "2015-01-01"
-  end: "2015-12-31"
+  start: "2023-06-01"
+  end: "2023-08-31"
 
-max_cloud_cover: null  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
+max_cloud_cover: 30  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
 
 sites:
   path: data/E-Sites.gpkg
@@ -29,7 +28,7 @@ sites:
 
 load:
   crs: EPSG:32632
-  resolution: 10
+  resolution: 30
   buffer_m: 50
   chunks: {x: 2048, y: 2048}
 

@@ -3,7 +3,12 @@ from datetime import UTC, datetime
 import pystac
 from shapely.geometry import box, mapping
 
-from sites_cube.stac import dedupe_items, items_table
+from sites_cube.stac import (
+    build_query,
+    cloud_cover_property,
+    dedupe_items,
+    items_table,
+)
 
 DT = datetime(2023, 6, 1, 10, 20, 31, tzinfo=UTC)
 
@@ -67,3 +72,46 @@ def test_grid_code_tiles_are_not_merged() -> None:
     unique = dedupe_items(pystac.ItemCollection(items))
     assert _ids(unique) == {"upu", "uqu"}
     assert set(items_table(unique, lon=10.0)["tile"]) == {"32UPU", "32UQU"}
+
+
+def test_query_s2_cloud_only() -> None:
+    assert build_query("sentinel-2-l2a", 30, None) == {"eo:cloud_cover": {"lt": 30}}
+
+
+def test_query_landsat_uses_land_cloud_cover_and_platforms() -> None:
+    assert build_query("landsat-c2-l2", 30, ["landsat-8", "landsat-9"]) == {
+        "landsat:cloud_cover_land": {"lt": 30},
+        "platform": {"in": ["landsat-8", "landsat-9"]},
+    }
+
+
+def test_query_without_filters_is_none() -> None:
+    assert build_query("landsat-c2-l2", None, None) is None
+    assert build_query("landsat-c2-l2", None, []) is None
+
+
+def test_unknown_collection_falls_back_to_eo_cloud_cover() -> None:
+    assert cloud_cover_property("some-other-collection") == "eo:cloud_cover"
+
+
+def test_landsat_wrs_tiles_are_not_merged() -> None:
+    def ls(id_: str, geom, row: str) -> pystac.Item:
+        item = _item(
+            id_,
+            geom,
+            **{
+                "landsat:wrs_path": "194",
+                "landsat:wrs_row": row,
+                "eo:cloud_cover": 50.0,
+                "landsat:cloud_cover_land": 10.0,
+            },
+        )
+        item.properties["platform"] = "landsat-8"
+        return item
+
+    items = [ls("r24", box(8, 51, 11, 53), "024"), ls("r25", box(8, 50, 11, 52), "025")]
+    unique = dedupe_items(pystac.ItemCollection(items))
+    assert _ids(unique) == {"r24", "r25"}
+    table = items_table(unique, lon=10.0, cloud_property="landsat:cloud_cover_land")
+    assert set(table["tile"]) == {"194024", "194025"}
+    assert (table["cloud_cover"] == 10.0).all()

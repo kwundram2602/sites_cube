@@ -26,9 +26,23 @@ def load_points(
     Items are not fused here so per-item corrections (S2 baseline offset) can be
     applied before overlapping tiles are merged.
     """
+    cube = load_cube(items, bands, sites, crs, resolution, buffer_m, chunks)
+    # trigger the actual reads, result is a small (time, site) dataset
+    return sample_points(cube, sites, crs).compute()
+
+
+def load_cube(
+    items: pystac.ItemCollection,
+    bands: dict[str, str],
+    sites: gpd.GeoDataFrame,
+    crs: str,
+    resolution: float,
+    buffer_m: float,
+    chunks: dict[str, int | Literal["auto"]],
+) -> xr.Dataset:
+    """Lazy (time, y, x) cube over the sites bbox, one time slice per item."""
     # 1. sites into the target grid CRS, their extent defines the load window
-    pts = sites.to_crs(crs)
-    xmin, ymin, xmax, ymax = pts.total_bounds
+    xmin, ymin, xmax, ymax = sites.to_crs(crs).total_bounds
     # 2. lazy (dask) cube over the sites bbox; nothing is read from the COGs yet
     ds = odc.stac.load(
         items,
@@ -40,12 +54,20 @@ def load_points(
         x=(xmin - buffer_m, xmax + buffer_m),
         y=(ymin - buffer_m, ymax + buffer_m),
         chunks=chunks,
-        # per-item baseline as variable (time,), needed for the S2 offset correction
-        with_properties=["s2:processing_baseline"] if _is_s2(items) else None,
+        # per-item baseline as variable (time,), needed for the S2 offset correction;
+        # float so "05.10" compares numerically against 4.0
+        with_properties=[{"key": "s2:processing_baseline", "dtype": "float32"}]
+        if _is_s2(items)
+        else None,
     )
     # 3. asset keys -> config aliases (B04 -> red)
-    ds = ds.rename({v: k for k, v in bands.items()})
-    # 4. vectorised point sampling: x/y share the new dim `site`, so each site
+    return ds.rename({v: k for k, v in bands.items()})
+
+
+def sample_points(ds: xr.Dataset, sites: gpd.GeoDataFrame, crs: str) -> xr.Dataset:
+    """Nearest pixel of every site, (time, y, x) -> (time, site)."""
+    pts = sites.to_crs(crs)
+    # 1. vectorised point sampling: x/y share the new dim `site`, so each site
     #    gets its own nearest pixel (not the full x*y cross product)
     sel = ds.sel(
         x=xr.DataArray(pts.geometry.x.to_numpy(), dims="site"),
@@ -53,12 +75,10 @@ def load_points(
         method="nearest",
     )
     return (
-        # 5. label the site dim with the site ids
+        # 2. label the site dim with the site ids
         sel.assign_coords(site=pts.index.to_numpy())
-        # 6. pixel coords are no longer needed per site
+        # 3. pixel coords are no longer needed per site
         .drop_vars(["x", "y", "spatial_ref"], errors="ignore")
-        # 7. trigger the actual reads, result is a small (time, site) dataset
-        .compute()
     )
 
 

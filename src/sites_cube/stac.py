@@ -12,11 +12,33 @@ SIGNERS = {"planetary_computer": planetary_computer.sign_inplace}
 # share of an item's footprint not covered by newer items of the same scene
 # above which it counts as a separate datastrip part, not a reprocessing
 MIN_NEW_AREA = 0.05
+# scene cloud cover property per collection, `max_cloud_cover` is applied to it
+CLOUD_COVER_PROPERTY = {
+    "sentinel-2-l2a": "eo:cloud_cover",
+    # land-only share, so coastal scenes are not dropped for clouds over the sea
+    "landsat-c2-l2": "landsat:cloud_cover_land",
+}
+
+
+def cloud_cover_property(collection: str) -> str:
+    return CLOUD_COVER_PROPERTY.get(collection, "eo:cloud_cover")
 
 
 def open_client(url: str, sign: str | None) -> pystac_client.Client:
     modifier = SIGNERS[sign] if sign else None
     return pystac_client.Client.open(url, modifier=modifier)
+
+
+def build_query(
+    collection: str, max_cloud_cover: float | None, platforms: list[str] | None
+) -> dict | None:
+    """STAC `query` filter for scene cloud cover and platforms, None if unfiltered."""
+    query = {}
+    if max_cloud_cover is not None:
+        query[cloud_cover_property(collection)] = {"lt": max_cloud_cover}
+    if platforms:
+        query["platform"] = {"in": list(platforms)}
+    return query or None
 
 
 def search_items(
@@ -26,14 +48,11 @@ def search_items(
     start: str,
     end: str,
     max_cloud_cover: float | None,
+    platforms: list[str] | None = None,
 ) -> pystac.ItemCollection:
     """Search all items intersecting the convex hull of the sites."""
     aoi = sites.to_crs(4326).union_all().convex_hull
-    query = (
-        {"eo:cloud_cover": {"lt": max_cloud_cover}}
-        if max_cloud_cover is not None
-        else None
-    )
+    query = build_query(collection, max_cloud_cover, platforms)
     search = client.search(
         collections=[collection],
         intersects=mapping(aoi),
@@ -93,11 +112,14 @@ def _tile(item: pystac.Item) -> str | None:
     return None
 
 
-def items_table(items: pystac.ItemCollection, lon: float) -> pd.DataFrame:
+def items_table(
+    items: pystac.ItemCollection, lon: float, cloud_property: str = "eo:cloud_cover"
+) -> pd.DataFrame:
     """One row per item with the metadata relevant for completeness checks.
 
     `solar_day` shifts UTC by the site longitude, so overlapping tiles of the
-    same overpass fall on the same day.
+    same overpass fall on the same day. `cloud_cover` is read from
+    `cloud_property`, the property the scene filter uses.
     """
     rows = []
     for item in items:
@@ -109,7 +131,7 @@ def items_table(items: pystac.ItemCollection, lon: float) -> pd.DataFrame:
                 "platform": p.get("platform"),
                 "tile": _tile(item),
                 "orbit": p.get("sat:relative_orbit"),
-                "cloud_cover": p.get("eo:cloud_cover"),
+                "cloud_cover": p.get(cloud_property),
                 "processing_baseline": p.get("s2:processing_baseline"),
             }
         )
