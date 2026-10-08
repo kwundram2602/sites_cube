@@ -118,3 +118,28 @@ def test_fuse_solar_day_drops_platform() -> None:
     ds = _ds([1, 2], None).astype("float32")
     ds = ds.assign_coords({PLATFORM: ("time", ["landsat-7", "landsat-8"])})
     assert PLATFORM not in fuse_solar_day(ds, 10.0).coords
+
+
+def test_passthrough_vars_are_not_scaled_and_masked_by_footprint() -> None:
+    # t0: valid item, t1: site outside the item footprint (all bands nodata)
+    ds = _ds([2500, 0], [5.1, 5.1])
+    ds["scl"] = (("time", "site"), np.array([[4], [0]], dtype="uint8"))
+    ds["cld"] = (("time", "site"), np.array([[0], [0]], dtype="uint8"))
+    out = to_reflectance(ds, 0, SCALE, 0.0, True, passthrough=["scl", "cld"])
+    np.testing.assert_allclose(out["red"].sel(site="A").values[0], 0.15, rtol=1e-6)
+    # unscaled, no S2 offset, 0 % cloud probability stays valid
+    np.testing.assert_array_equal(out["scl"].sel(site="A").values[0], 4)
+    np.testing.assert_array_equal(out["cld"].sel(site="A").values[0], 0)
+    assert out["scl"].dtype == np.float32
+    assert np.isnan(out["scl"].sel(site="A").values[1])
+    assert np.isnan(out["cld"].sel(site="A").values[1])
+
+
+def test_passthrough_qa_pixel_is_masked_by_footprint_only() -> None:
+    # qa_pixel as quality layer: float32 copy, NaN only outside the footprint
+    ds = _ds([10000, 0], None)
+    ds[QA_PIXEL] = (("time", "site"), np.array([[22280], [1]], dtype="uint16"))
+    out = to_reflectance(ds, 0, 0.0000275, -0.2, False, passthrough=[QA_PIXEL])
+    qa = out[QA_PIXEL].sel(site="A").values
+    assert qa[0] == 22280
+    assert np.isnan(qa[1])

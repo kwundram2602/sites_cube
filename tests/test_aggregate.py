@@ -63,3 +63,11 @@ def test_write_per_site(ds: xr.Dataset, tmp_path: Path) -> None:
     df = pd.read_csv(tmp_path / "B.csv")
     assert list(df.columns) == ["time", "red", "green", "n_obs"]
     assert df["n_obs"].tolist() == [2, 0]
+
+
+def test_to_long_keeps_platform_as_column(ds: xr.Dataset) -> None:
+    ds = ds.assign_coords(platform=("time", ["s2a", "s2b", "s2a", "s2b"]))
+    df = to_long(ds)
+    assert "platform" in df.columns
+    assert set(df["band"]) == {"red", "green"}
+    assert len(df) == 16

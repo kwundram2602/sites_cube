@@ -59,5 +59,5 @@ uv sync
 ## Run
 
 ```bash
-uv run sites-cube config=config/config.yaml
+uv run sites-cube config=config/sentinel2.yaml
 ```

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from omegaconf import DictConfig, OmegaConf
 
-DEFAULT_CONFIG = Path("config/config.yaml")
+DEFAULT_CONFIG = Path("config/sentinel2.yaml")
 
 
 def load_config(argv: list[str] | None = None) -> DictConfig:

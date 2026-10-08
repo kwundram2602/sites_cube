@@ -5,11 +5,18 @@ stac:
 
 collection: sentinel-2-l2a
 platforms: null  # e.g. [sentinel-2a, sentinel-2b], null = all platforms of the collection
-# alias -> asset key, swap per collection
+# alias -> asset key, all 10 m and 20 m bands; 20 m bands are resampled (nearest) to load.resolution
 bands:
-  red: B04
-  green: B03
   blue: B02
+  green: B03
+  red: B04
+  rededge1: B05
+  rededge2: B06
+  rededge3: B07
+  nir: B08
+  nir08: B8A
+  swir16: B11
+  swir22: B12
 nodata: 0
 # "s2_offset only for baseline ≥ 04.00".
 # reflectance = (DN - s2_offset) * scale + offset
@@ -17,11 +24,17 @@ scale: 0.0001
 offset: 0.0
 harmonize_s2_offset: true  # subtract 1000 DN for processing baseline >= 04.00 (like GEE S2_SR_HARMONIZED)
 
+# quality layers, alias -> asset key: written unscaled next to the bands (NaN outside
+# the item footprint); only with aggregate.enabled: false
+# Planetary Computer has no cloud/snow probabilities (CDSE: CLD_20m, SNW_20m)
+quality:
+  scl: SCL
+
 time:
   start: "2015-01-01"
-  end: "2015-12-31"
+  end: "2016-12-31"
 
-max_cloud_cover: null  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
+max_cloud_cover: 20  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
 
 sites:
   path: data/E-Sites.gpkg
@@ -35,6 +48,7 @@ load:
   chunks: {x: 2048, y: 2048}
 
 aggregate:
+  enabled: false  # false = one row/GeoTIFF per STAC item (no solar-day fusion), required for `quality`
   freq: 1MS
   reducer: median  # median | mean | min | max | std | first | last
 
@@ -46,7 +60,7 @@ dask:
   memory_limit: auto     # per worker, e.g. 4GiB
 
 raster:
-  enabled: false  # also write the reduced scenes over the sites window as GeoTIFF, one per aggregate.freq period
+  enabled: true  # also write the scenes over the sites window as GeoTIFF, one per item (aggregation off) or aggregate.freq period
 
 count_only: false  # only search + report collection size, no pixel loading
 out_dir: out

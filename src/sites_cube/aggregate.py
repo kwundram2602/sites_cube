@@ -27,6 +27,8 @@ def to_long(ds: xr.Dataset) -> pd.DataFrame:
     """Long table: site, time, band, value, n_obs (n_obs only if present)."""
     # 1. spectral bands only, the `n_obs` count is handled separately
     bands = [v for v in ds.data_vars if v != "n_obs"]
+    # per-item data carries the platform of every time step, kept as a column
+    ids = ["site", "time"] + (["platform"] if "platform" in ds.coords else [])
     df = (
         ds[bands]
         # 2. (time, site) grid -> one row per time/site, one column per band
@@ -34,7 +36,7 @@ def to_long(ds: xr.Dataset) -> pd.DataFrame:
         # 3. move the `time` and `site` index levels into regular columns
         .reset_index()
         # 4. wide -> long: band columns become rows with a `band` and a `value` column
-        .melt(id_vars=["site", "time"], var_name="band")
+        .melt(id_vars=ids, var_name="band")
     )
     # 5. the count exists only after `aggregate_time`, not for daily data
     if "n_obs" in ds:
@@ -45,12 +47,20 @@ def to_long(ds: xr.Dataset) -> pd.DataFrame:
     return df.sort_values(["site", "band", "time"]).reset_index(drop=True)
 
 
-def write_per_site(ds: xr.Dataset, out_dir: Path, decimals: int = 4) -> list[Path]:
-    """One wide CSV per site: `time` rows, one column per band (+ `n_obs`)."""
+def write_per_site(
+    ds: xr.Dataset, out_dir: Path, decimals: int = 4, dropna: bool = False
+) -> list[Path]:
+    """One wide CSV per site: `time` rows, one column per band (+ `n_obs`).
+
+    `dropna` drops rows without any value, e.g. per-item data where the site lies
+    outside the item footprint.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
     for site in ds["site"].to_numpy():
         df = ds.sel(site=site).drop_vars("site").to_dataframe().round(decimals)
+        if dropna:
+            df = df.dropna(how="all", subset=[str(v) for v in ds.data_vars])
         # file names must not contain path separators
         path = out_dir / f"{str(site).replace('/', '_')}.csv"
         df.to_csv(path, index_label="time")

@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Literal
 
 import geopandas as gpd
@@ -125,13 +126,18 @@ def to_reflectance(
     scale: float,
     offset: float,
     harmonize_s2_offset: bool,
+    passthrough: Sequence[str] = (),
 ) -> xr.Dataset:
     """Mask nodata, remove S2 baseline offset, apply scale/offset.
 
     Landsat QA variables are passed through unchanged for `landsat.mask_landsat`.
+    `passthrough` variables (quality layers such as SCL or cloud probability) are
+    neither scaled nor nodata-masked; they become float32 and NaN only where all
+    spectral bands are nodata, i.e. outside the item footprint.
     """
-    # 1. spectral bands only, the baseline and QA variables are metadata
-    bands = [v for v in ds.data_vars if v != S2_BASELINE and v not in QA_VARS]
+    # 1. spectral bands only, the baseline, QA and quality variables are metadata
+    skip = {S2_BASELINE, *QA_VARS, *passthrough}
+    bands = [v for v in ds.data_vars if v not in skip]
     # 2. float so NaN can mark nodata pixels (e.g. outside the tile footprint)
     out = ds[bands].astype("float32").where(ds[bands] != nodata)
     if harmonize_s2_offset and S2_BASELINE in ds:
@@ -142,7 +148,12 @@ def to_reflectance(
         out = out.where(out > 0)
     # 5. DN -> surface reflectance
     out = out * scale + offset
-    return out.assign({v: ds[v] for v in QA_VARS if v in ds})
+    out = out.assign({v: ds[v] for v in QA_VARS if v in ds and v not in passthrough})
+    # 6. quality layers: 0 can be a valid value (0 % cloud), so mask by footprint
+    footprint = (ds[bands] != nodata).to_dataarray("band").any("band")
+    return out.assign(
+        {v: ds[v].astype("float32").where(footprint) for v in passthrough}
+    )
 
 
 def fuse_solar_day(ds: xr.Dataset, lon: float) -> xr.Dataset:

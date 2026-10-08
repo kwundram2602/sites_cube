@@ -30,6 +30,12 @@ landsat:
   out_of_range: nan      # nan | clip | keep, for transformed values outside [0,1]
   tm_as_etm: true        # TM is not in the paper, transform it with the ETM+ coefficients (warns)
 
+# quality layers, alias -> asset key: written unscaled next to the bands (NaN outside
+# the item footprint); only with aggregate.enabled: false
+quality: null
+# quality:
+#   qa_pixel: qa_pixel  # independent of landsat.qa_mask
+
 time:
   start: "2009-07-01"
   end: "2010-09-30"
@@ -48,6 +54,7 @@ load:
   chunks: {x: 2048, y: 2048}
 
 aggregate:
+  enabled: false  # false = one row/GeoTIFF per STAC item (no solar-day fusion), required for `quality`
   freq: 1MS # 1D | 1MS | 1M | 1Y
   reducer: median  # median | mean | min | max | std | first | last
 

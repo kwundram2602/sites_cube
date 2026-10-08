@@ -17,6 +17,7 @@ from sites_cube.sites import read_sites
 
 def main() -> None:
     cfg = load_config(sys.argv[1:])
+    check_config(cfg)
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     name = cfg.collection
@@ -80,6 +81,7 @@ def main() -> None:
     landsat_cfg = cfg.get("landsat")
     if landsat_cfg and landsat_cfg.qa_mask:
         bands |= {v: v for v in QA_VARS}
+    bands |= dict(cfg.get("quality") or {})
     load_args = (
         items,
         bands,
@@ -97,33 +99,71 @@ def main() -> None:
             raw = extract.sample_points(cube, sites, cfg.load.crs)
         else:
             raw = extract.load_points(*load_args)
-    daily = to_daily(raw, cfg, lon)
-    aggregate.to_long(daily).to_parquet(out_dir / f"raw_{name}.parquet", index=False)
+    prepared = prepare(raw, cfg, lon)
+    aggregate.to_long(prepared).to_parquet(out_dir / f"raw_{name}.parquet", index=False)
+
+    if not aggregates(cfg):
+        # one row / GeoTIFF per STAC item, without solar-day fusion
+        site_dir = out_dir / name / "sites_items"
+        paths = aggregate.write_per_site(prepared, site_dir, dropna=True)
+        print(f"wrote {len(paths)} site CSVs to {site_dir}")
+        if write_raster:
+            raster_dir = out_dir / name / "raster_items"
+            tifs = raster.write_periods(
+                prepare(cube, cfg, lon), cube.odc.geobox, raster_dir
+            )
+            print(f"wrote {len(tifs)} GeoTIFFs to {raster_dir}")
+        return
 
     reducer = cfg.aggregate.reducer
     freq = cfg.aggregate.freq
-    reduced = aggregate.aggregate_time(daily, freq, reducer)
+    reduced = aggregate.aggregate_time(prepared, freq, reducer)
     site_dir = out_dir / name / f"sites_{reducer}_{freq}"
     paths = aggregate.write_per_site(reduced, site_dir)
     print(f"wrote {len(paths)} site CSVs to {site_dir}")
 
     if write_raster:
         # same chain as the points: reflectance -> solar-day mean -> period reducer
-        periods = aggregate.aggregate_time(to_daily(cube, cfg, lon), freq, reducer)
+        periods = aggregate.aggregate_time(prepare(cube, cfg, lon), freq, reducer)
         raster_dir = out_dir / name / f"raster_{reducer}_{freq}"
         tifs = raster.write_periods(periods, cube.odc.geobox, raster_dir)
         print(f"wrote {len(tifs)} GeoTIFFs to {raster_dir}")
 
 
-def to_daily(raw: xr.Dataset, cfg: DictConfig, lon: float) -> xr.Dataset:
-    """DN -> reflectance -> Landsat QA mask and harmonisation -> solar-day mean."""
+def aggregates(cfg: DictConfig) -> bool:
+    return cfg.aggregate.get("enabled", True)
+
+
+def check_config(cfg: DictConfig) -> None:
+    """Quality layers (class codes, bit flags) cannot be reduced over time."""
+    quality = cfg.get("quality") or {}
+    # e.g. CLI `quality={scl:SCL}` parses as key "scl:SCL" without a value
+    missing = [k for k, v in quality.items() if v is None]
+    if missing:
+        raise ValueError(f"`quality` aliases {missing} have no asset key")
+    if quality and aggregates(cfg):
+        raise ValueError(
+            "`quality` layers need `aggregate.enabled: false`, "
+            "class codes and bit flags cannot be aggregated"
+        )
+
+
+def prepare(raw: xr.Dataset, cfg: DictConfig, lon: float) -> xr.Dataset:
+    """DN -> reflectance -> Landsat QA mask and harmonisation -> solar-day mean.
+
+    Without aggregation the solar-day fusion is skipped (one time step per item)
+    and the `quality` layers are kept unscaled.
+    """
+    quality = list(cfg.get("quality") or {})
     refl = extract.to_reflectance(
-        raw, cfg.nodata, cfg.scale, cfg.offset, cfg.harmonize_s2_offset
+        raw, cfg.nodata, cfg.scale, cfg.offset, cfg.harmonize_s2_offset, quality
     )
+    kept = refl[quality]
     landsat_cfg = cfg.get("landsat")
     if landsat_cfg and landsat_cfg.qa_mask:
         refl = mask_landsat(
-            refl,
+            # the mask needs the raw integer QA, quality copies are float32
+            refl.assign({v: raw[v] for v in QA_VARS}),
             qa_pixel_flags=landsat_cfg.get("qa_pixel_flags", DEFAULT_QA_PIXEL_FLAGS),
             saturation=landsat_cfg.get("mask_saturation", True),
         )
@@ -135,4 +175,9 @@ def to_daily(raw: xr.Dataset, cfg: DictConfig, lon: float) -> xr.Dataset:
             out_of_range=landsat_cfg.out_of_range,
             tm_as_etm=landsat_cfg.get("tm_as_etm", True),
         )
+    # `mask_landsat` drops the QA variables, quality copies come back after it
+    refl = refl.assign(kept.data_vars)
+    if not aggregates(cfg):
+        # items that cover none of the sites / no pixel of the window
+        return refl.dropna("time", how="all").sortby("time")
     return extract.fuse_solar_day(refl, lon)

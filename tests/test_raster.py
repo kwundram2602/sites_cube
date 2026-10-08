@@ -32,3 +32,34 @@ def test_one_tif_per_period_with_data(tmp_path) -> None:
         assert src.transform == geobox.affine
         np.testing.assert_allclose(src.read(1), red[0])
         np.testing.assert_array_equal(src.read(2), 3)
+
+
+def test_per_item_cube_without_n_obs(tmp_path) -> None:
+    geobox = GeoBox.from_bbox(
+        (500000, 6860000, 500060, 6860060), "EPSG:32632", resolution=30
+    )
+    ny, nx = geobox.shape
+    red = np.full((3, ny, nx), 0.1, dtype="float32")
+    scl = np.full((3, ny, nx), 4, dtype="float32")
+    # third item does not cover the window at all
+    red[2] = np.nan
+    scl[2] = np.nan
+    t = pd.Timestamp("2023-06-01T10:30:31")
+    ds = xr.Dataset(
+        {"red": (("time", "y", "x"), red), "scl": (("time", "y", "x"), scl)},
+        # two tiles with the same sensing time
+        coords={
+            "time": [t, t, t + pd.Timedelta("5D")],
+            "platform": ("time", ["s2a", "s2a", "s2b"]),
+        },
+    )
+
+    paths = write_periods(ds, geobox, tmp_path)
+
+    assert [p.name for p in paths] == [
+        "2023-06-01T103031.tif",
+        "2023-06-01T103031_1.tif",
+    ]
+    with rasterio.open(paths[0]) as src:
+        assert src.descriptions == ("red", "scl")
+        np.testing.assert_array_equal(src.read(2), 4)

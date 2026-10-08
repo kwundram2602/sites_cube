@@ -28,6 +28,12 @@ landsat:
   harmonize_method: ols  # ols (means, composites) | rma (thresholds, distributions)
   out_of_range: nan      # nan | clip | keep, for transformed values outside [0,1]
 
+# quality layers, alias -> asset key: written unscaled next to the bands (NaN outside
+# the item footprint); only with aggregate.enabled: false
+quality: null
+# quality:
+#   qa_pixel: qa_pixel  # independent of landsat.qa_mask
+
 time:
   start: "2023-06-01"
   end: "2023-06-30"
@@ -46,6 +52,7 @@ load:
   chunks: {x: 2048, y: 2048}
 
 aggregate:
+  enabled: true  # false = one row/GeoTIFF per STAC item (no solar-day fusion), required for `quality`
   freq: 1D # 1D | 1MS | 1M | 1Y
   reducer: median  # median | mean | min | max | std | first | last
 
