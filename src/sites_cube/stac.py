@@ -25,6 +25,16 @@ PAGE_SIZE = 100
 # share of an item's footprint not covered by newer items of the same scene
 # above which it counts as a separate datastrip part, not a reprocessing
 MIN_NEW_AREA = 0.05
+# columns of `items_table`, also for searches without any item
+ITEM_COLUMNS = [
+    "id",
+    "datetime",
+    "platform",
+    "tile",
+    "orbit",
+    "cloud_cover",
+    "processing_baseline",
+]
 # scene cloud cover property per collection, `max_cloud_cover` is applied to it
 CLOUD_COVER_PROPERTY = {
     "sentinel-2-l2a": "eo:cloud_cover",
@@ -170,8 +180,8 @@ def items_table(
                 "processing_baseline": _baseline(p),
             }
         )
-    df = pd.DataFrame(rows)
-    df["datetime"] = pd.to_datetime(df["datetime"]).dt.tz_convert(None)
+    df = pd.DataFrame(rows, columns=ITEM_COLUMNS)
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_convert(None)
     df.insert(
         2, "solar_day", (df["datetime"] + timedelta(hours=lon / 15)).dt.normalize()
     )
@@ -180,6 +190,9 @@ def items_table(
 
 def count_report(table: pd.DataFrame) -> tuple[str, pd.DataFrame]:
     """Summarise collection size: totals, duplicates, per tile, per year/month."""
+    if table.empty:
+        by_month = pd.DataFrame(columns=["year", "month", "n_items", "n_dates"])
+        return "items total:            0", by_month
     dup = table.duplicated(["solar_day", "tile", "platform"], keep=False)
     by_month = (
         table.assign(year=table["solar_day"].dt.year, month=table["solar_day"].dt.month)

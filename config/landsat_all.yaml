@@ -52,6 +52,7 @@ load:
   resolution: 30
   buffer_m: 50
   chunks: {x: 2048, y: 2048}
+  read_retries: 2  # repeat the whole load after a failed raster read (e.g. truncated download)
 
 aggregate:
   enabled: false  # false = one row/GeoTIFF per STAC item (no solar-day fusion), required for `quality`

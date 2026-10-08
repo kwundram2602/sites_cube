@@ -6,6 +6,7 @@ from shapely.geometry import box, mapping
 from sites_cube.stac import (
     build_filter,
     cloud_cover_property,
+    count_report,
     dedupe_items,
     items_table,
 )
@@ -160,3 +161,13 @@ def test_landsat_wrs_tiles_are_not_merged() -> None:
     table = items_table(unique, lon=10.0, cloud_property="landsat:cloud_cover_land")
     assert set(table["tile"]) == {"194024", "194025"}
     assert (table["cloud_cover"] == 10.0).all()
+
+
+def test_empty_search_gives_empty_table_and_report() -> None:
+    table = items_table(pystac.ItemCollection([]), lon=10.0)
+    assert table.empty
+    assert "datetime" in table.columns
+    report, by_month = count_report(table)
+    assert "items total:            0" in report
+    assert list(by_month.columns) == ["year", "month", "n_items", "n_dates"]
+    assert by_month.empty

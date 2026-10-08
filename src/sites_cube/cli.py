@@ -8,7 +8,7 @@ import xarray as xr
 from omegaconf import DictConfig
 
 from sites_cube import aggregate, extract, raster, stac
-from sites_cube.compute import dask_context
+from sites_cube.compute import dask_context, retry_reads
 from sites_cube.config import load_config
 from sites_cube.harmonize import harmonize_landsat
 from sites_cube.landsat import DEFAULT_QA_PIXEL_FLAGS, QA_VARS, mask_landsat
@@ -65,13 +65,13 @@ def main() -> None:
 
     if cfg.count_only:
         return
+    if not items:
+        print("\nno items found, nothing to load")
+        return
 
     print(f"\nloading {len(items)} items at {len(sites)} sites ...")
-    # GDAL cloud settings plus per-catalogue options (e.g. CDSE S3 endpoint);
-    # odc captures them into the task graph, so workers get them too
-    gdal_opts: dict[str, Any] = {
-        k: str(v) for k, v in (cfg.stac.get("gdal") or {}).items()
-    }
+    # odc captures the GDAL options into the task graph, so workers get them too
+    gdal_opts: dict[str, Any] = gdal_options(cfg)
     odc.stac.configure_rio(cloud_defaults=True, **gdal_opts)
     # the rasterio env is thread-local and some worker threads open files without
     # it (CDSE reads then went to AWS); GDAL falls back to process env vars, which
@@ -92,13 +92,16 @@ def main() -> None:
         dict(cfg.load.chunks),
     )
     write_raster = cfg.get("raster", {}).get("enabled", False)
+    attempts = 1 + cfg.load.get("read_retries", 2)
     with dask_context(cfg.dask):
         if write_raster:
             # read the whole window once; the points are sampled from memory
-            cube = extract.load_cube(*load_args).compute()
+            cube = retry_reads(
+                lambda: extract.load_cube(*load_args).compute(), attempts
+            )
             raw = extract.sample_points(cube, sites, cfg.load.crs)
         else:
-            raw = extract.load_points(*load_args)
+            raw = retry_reads(lambda: extract.load_points(*load_args), attempts)
     prepared = prepare(raw, cfg, lon)
     aggregate.to_long(prepared).to_parquet(out_dir / f"raw_{name}.parquet", index=False)
 
@@ -128,6 +131,18 @@ def main() -> None:
         raster_dir = out_dir / name / f"raster_{reducer}_{freq}"
         tifs = raster.write_periods(periods, cube.odc.geobox, raster_dir)
         print(f"wrote {len(tifs)} GeoTIFFs to {raster_dir}")
+
+
+def gdal_options(cfg: DictConfig) -> dict[str, str]:
+    """GDAL settings for reading assets, per-catalogue options (e.g. CDSE S3) on top.
+
+    JP2 tiles are decoded single-threaded: under dask, the multi-threaded
+    JP2OpenJPEG decoder on CDSE S3 fails on some tiles ("Stream too short") and,
+    without raising, returns zero pixels that then pass as nodata. dask already
+    parallelises across chunks.
+    """
+    opts: dict[str, Any] = {"GDAL_NUM_THREADS": "1", **(cfg.stac.get("gdal") or {})}
+    return {k: str(v) for k, v in opts.items()}
 
 
 def aggregates(cfg: DictConfig) -> bool:

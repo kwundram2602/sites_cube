@@ -34,7 +34,7 @@ time:
   start: "2015-01-01"
   end: "2016-12-31"
 
-max_cloud_cover: 20  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
+max_cloud_cover: null  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
 
 sites:
   path: data/E-Sites.gpkg
@@ -46,6 +46,7 @@ load:
   resolution: 10
   buffer_m: 50
   chunks: {x: 2048, y: 2048}
+  read_retries: 2  # repeat the whole load after a failed raster read (e.g. truncated download)
 
 aggregate:
   enabled: false  # false = one row/GeoTIFF per STAC item (no solar-day fusion), required for `quality`
