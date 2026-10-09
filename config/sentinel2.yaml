@@ -1,5 +1,8 @@
 stac:
   url: https://planetarycomputer.microsoft.com/api/stac/v1
+  # PC serves older scenes in their original processing (e.g. 2016: baseline 02.12,
+  # no geometric refinement), found 1 px (10 m) off the reprocessed product;
+  # config/sentinel2_cdse.yaml reads CDSE Collection-1 (05.xx) instead
   sign: planetary_computer  # null for endpoints without URL signing
   gdal: null  # extra GDAL config options for reading assets, e.g. S3 endpoint
 
@@ -45,6 +48,10 @@ load:
   crs: EPSG:32632
   resolution: 10
   buffer_m: 50
+  # fixed load window instead of the buffered sites extent (sites outside are dropped):
+  # [xmin, ymin, xmax, ymax] in load.crs on the resolution grid, or a path to a
+  # vector/raster bounds file (reprojected, snapped outward to the grid); null = sites
+  bbox: null
   chunks: {x: 2048, y: 2048}
   read_retries: 2  # repeat the whole load after a failed raster read (e.g. truncated download)
 

@@ -51,6 +51,10 @@ load:
   crs: EPSG:32632
   resolution: 30
   buffer_m: 50
+  # fixed load window instead of the buffered sites extent (sites outside are dropped):
+  # [xmin, ymin, xmax, ymax] in load.crs on the resolution grid, or a path to a
+  # vector/raster bounds file (reprojected, snapped outward to the grid); null = sites
+  bbox: null
   chunks: {x: 2048, y: 2048}
   read_retries: 2  # repeat the whole load after a failed raster read (e.g. truncated download)
 

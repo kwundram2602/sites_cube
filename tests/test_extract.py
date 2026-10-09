@@ -1,9 +1,14 @@
 from datetime import UTC, datetime
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pystac
+import pytest
+import rasterio
 import xarray as xr
+from rasterio.transform import from_origin
+from shapely.geometry import Point, box
 
 from sites_cube.extract import (
     PLATFORM,
@@ -11,7 +16,9 @@ from sites_cube.extract import (
     _baseline_property,
     fuse_solar_day,
     platforms_by_time,
+    sites_in_bbox,
     to_reflectance,
+    window_bbox,
 )
 from sites_cube.landsat import QA_PIXEL
 
@@ -143,3 +150,63 @@ def test_passthrough_qa_pixel_is_masked_by_footprint_only() -> None:
     qa = out[QA_PIXEL].sel(site="A").values
     assert qa[0] == 22280
     assert np.isnan(qa[1])
+
+
+UTM = "EPSG:32632"
+
+
+def test_window_bbox_none() -> None:
+    assert window_bbox(None, UTM, 10) is None
+
+
+def test_window_bbox_array_is_used_exactly() -> None:
+    bbox = [504800, 6859000, 515800, 6865850]
+    assert window_bbox(bbox, UTM, 10) == (504800, 6859000, 515800, 6865850)
+
+
+def test_window_bbox_array_off_grid_raises() -> None:
+    with pytest.raises(ValueError, match="multiple of"):
+        window_bbox([504805, 6859000, 515800, 6865850], UTM, 10)
+
+
+def test_window_bbox_vector_file_is_reprojected_and_snapped(tmp_path) -> None:
+    path = tmp_path / "bounds.gpkg"
+    poly = box(504803, 6859001, 515797, 6865849)
+    gpd.GeoDataFrame(geometry=[poly], crs=UTM).to_crs(4326).to_file(path)
+    bbox = window_bbox(str(path), UTM, 10)
+    assert bbox is not None
+    xmin, ymin, xmax, ymax = bbox
+    # outward to the 10 m grid, reprojection may move the corners slightly
+    assert (xmin, ymin, xmax, ymax) == pytest.approx(
+        (504800, 6859000, 515800, 6865850), abs=10
+    )
+    assert all(v % 10 == 0 for v in (xmin, ymin, xmax, ymax))
+    assert xmin <= 504803 and ymin <= 6859001
+    assert xmax >= 515797 and ymax >= 6865849
+
+
+def test_window_bbox_raster_file_is_snapped(tmp_path) -> None:
+    path = tmp_path / "bounds.tif"
+    profile = {
+        "driver": "GTiff",
+        "width": 3,
+        "height": 2,
+        "count": 1,
+        "dtype": "uint8",
+        "crs": UTM,
+        "transform": from_origin(504801, 6859020, 5, 5),
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(np.zeros((1, 2, 3), dtype="uint8"))
+    # raster extent 504801..504816 / 6859010..6859020
+    assert window_bbox(str(path), UTM, 10) == (504800, 6859010, 504820, 6859020)
+
+
+def test_sites_in_bbox_drops_outside_sites() -> None:
+    sites = gpd.GeoDataFrame(
+        geometry=[Point(505000, 6860000), Point(600000, 6860000)],
+        index=pd.Index(["in", "out"], name="site"),
+        crs=UTM,
+    ).to_crs(4326)
+    kept = sites_in_bbox(sites, UTM, (504800, 6859000, 515800, 6865850))
+    assert list(kept.index) == ["in"]

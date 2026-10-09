@@ -1,4 +1,6 @@
+import math
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Literal
 
 import geopandas as gpd
@@ -6,7 +8,9 @@ import numpy as np
 import odc.stac
 import pandas as pd
 import pystac
+import rasterio
 import xarray as xr
+from rasterio.warp import transform_bounds
 
 from sites_cube.landsat import QA_VARS
 
@@ -15,6 +19,54 @@ S2_BASELINE = (
     "s2_processing_baseline"  # odc.stac name of property s2:processing_baseline
 )
 PLATFORM = "platform"
+# raster bounds files, everything else is read as vector
+RASTER_SUFFIXES = {".tif", ".tiff", ".vrt"}
+
+Bbox = tuple[float, float, float, float]
+
+
+def window_bbox(
+    value: Sequence[float] | str | None, crs: str, resolution: float
+) -> Bbox | None:
+    """Fixed load window in `crs` from `load.bbox`, None = derive it from the sites.
+
+    An array `[xmin, ymin, xmax, ymax]` must lie on the `resolution` grid, so the
+    window matches the source pixels exactly. A bounds file (vector or raster) is
+    reprojected and snapped outward to the grid, hand-drawn extents rarely align.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        bounds = _file_bounds(Path(value), crs)
+        return (
+            math.floor(bounds[0] / resolution) * resolution,
+            math.floor(bounds[1] / resolution) * resolution,
+            math.ceil(bounds[2] / resolution) * resolution,
+            math.ceil(bounds[3] / resolution) * resolution,
+        )
+    xmin, ymin, xmax, ymax = (float(v) for v in value)
+    off_grid = [v for v in (xmin, ymin, xmax, ymax) if v % resolution]
+    if off_grid:
+        raise ValueError(
+            f"load.bbox {off_grid} not a multiple of the resolution {resolution}"
+        )
+    return xmin, ymin, xmax, ymax
+
+
+def _file_bounds(path: Path, crs: str) -> Bbox:
+    if path.suffix.lower() in RASTER_SUFFIXES:
+        with rasterio.open(path) as src:
+            return transform_bounds(src.crs, crs, *src.bounds)
+    xmin, ymin, xmax, ymax = gpd.read_file(path).to_crs(crs).total_bounds
+    return xmin, ymin, xmax, ymax
+
+
+def sites_in_bbox(sites: gpd.GeoDataFrame, crs: str, bbox: Bbox) -> gpd.GeoDataFrame:
+    """Sites inside `bbox` (in `crs`); outside ones would sample the border pixel."""
+    pts = sites.to_crs(crs)
+    xmin, ymin, xmax, ymax = bbox
+    inside = pts.geometry.x.between(xmin, xmax) & pts.geometry.y.between(ymin, ymax)
+    return sites[inside.to_numpy()]
 
 
 def load_points(
@@ -25,13 +77,14 @@ def load_points(
     resolution: float,
     buffer_m: float,
     chunks: dict[str, int | Literal["auto"]],
+    bbox: Bbox | None = None,
 ) -> xr.Dataset:
-    """Load every item separately over the sites bbox and sample the site pixels.
+    """Load every item separately over the window and sample the site pixels.
 
     Items are not fused here so per-item corrections (S2 baseline offset) can be
     applied before overlapping tiles are merged.
     """
-    cube = load_cube(items, bands, sites, crs, resolution, buffer_m, chunks)
+    cube = load_cube(items, bands, sites, crs, resolution, buffer_m, chunks, bbox)
     # trigger the actual reads, result is a small (time, site) dataset
     return sample_points(cube, sites, crs).compute()
 
@@ -44,10 +97,17 @@ def load_cube(
     resolution: float,
     buffer_m: float,
     chunks: dict[str, int | Literal["auto"]],
+    bbox: Bbox | None = None,
 ) -> xr.Dataset:
-    """Lazy (time, y, x) cube over the sites bbox, one time slice per item."""
-    # 1. sites into the target grid CRS, their extent defines the load window
-    xmin, ymin, xmax, ymax = sites.to_crs(crs).total_bounds
+    """Lazy (time, y, x) cube over `bbox` or the buffered sites bbox, one slice per item."""
+    # 1. load window in the target grid CRS: fixed bbox (on the pixel grid, no
+    #    buffer) or the buffered extent of the sites
+    if bbox is None:
+        xmin, ymin, xmax, ymax = sites.to_crs(crs).total_bounds
+        xmin, ymin = xmin - buffer_m, ymin - buffer_m
+        xmax, ymax = xmax + buffer_m, ymax + buffer_m
+    else:
+        xmin, ymin, xmax, ymax = bbox
     baseline = _baseline_property(items)
     # 2. lazy (dask) cube over the sites bbox; nothing is read from the COGs yet
     ds = odc.stac.load(
@@ -56,9 +116,9 @@ def load_cube(
         groupby="id",  # one time slice per item, no fusing of overlapping tiles
         crs=crs,
         resolution=resolution,
-        # buffer keeps edge sites away from the window border
-        x=(xmin - buffer_m, xmax + buffer_m),
-        y=(ymin - buffer_m, ymax + buffer_m),
+        # the sites buffer keeps edge sites away from the window border
+        x=(xmin, xmax),
+        y=(ymin, ymax),
         chunks=chunks,
         # per-item baseline as variable (time,), needed for the S2 offset correction;
         # float so "05.10" compares numerically against 4.0

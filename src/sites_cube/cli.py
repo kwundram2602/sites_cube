@@ -3,9 +3,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import geopandas as gpd
 import odc.stac
+import pystac
 import xarray as xr
 from omegaconf import DictConfig
+from shapely.geometry import box
 
 from sites_cube import aggregate, extract, raster, stac
 from sites_cube.compute import dask_context, retry_reads
@@ -25,6 +28,17 @@ def main() -> None:
     cloud_property = stac.cloud_cover_property(name)
 
     sites = read_sites(cfg.sites.path, cfg.sites.layer, cfg.sites.id_field)
+    bbox = extract.window_bbox(cfg.load.get("bbox"), cfg.load.crs, cfg.load.resolution)
+    # the search covers the load window, by default the sites
+    search_area = sites
+    if bbox is not None:
+        inside = extract.sites_in_bbox(sites, cfg.load.crs, bbox)
+        print(
+            f"load window {bbox} ({cfg.load.crs}), "
+            f"{len(sites) - len(inside)} sites outside dropped"
+        )
+        sites = inside
+        search_area = gpd.GeoDataFrame(geometry=[box(*bbox)], crs=cfg.load.crs)
     lon = sites.to_crs(4326).union_all().centroid.x
     client = stac.open_client(cfg.stac.url, cfg.stac.sign)
     print(
@@ -34,7 +48,7 @@ def main() -> None:
 
     # collection size with and without the scene cloud filter, for comparison with GEE
     all_items = stac.search_items(
-        client, name, sites, cfg.time.start, cfg.time.end, None, platforms
+        client, name, search_area, cfg.time.start, cfg.time.end, None, platforms
     )
     report, _ = stac.count_report(stac.items_table(all_items, lon, cloud_property))
     print(f"\n== all items, no cloud filter (raw catalogue) ==\n{report}")
@@ -48,7 +62,7 @@ def main() -> None:
             stac.search_items(
                 client,
                 name,
-                sites,
+                search_area,
                 cfg.time.start,
                 cfg.time.end,
                 cfg.max_cloud_cover,
@@ -69,6 +83,9 @@ def main() -> None:
         print("\nno items found, nothing to load")
         return
 
+    # quality layers missing in some items are dropped for this run, `prepare`
+    # reads them from the config
+    cfg.quality = check_assets(items, dict(cfg.bands), dict(cfg.get("quality") or {}))
     print(f"\nloading {len(items)} items at {len(sites)} sites ...")
     # odc captures the GDAL options into the task graph, so workers get them too
     gdal_opts: dict[str, Any] = gdal_options(cfg)
@@ -90,6 +107,7 @@ def main() -> None:
         cfg.load.resolution,
         cfg.load.buffer_m,
         dict(cfg.load.chunks),
+        bbox,
     )
     write_raster = cfg.get("raster", {}).get("enabled", False)
     attempts = 1 + cfg.load.get("read_retries", 2)
@@ -143,6 +161,41 @@ def gdal_options(cfg: DictConfig) -> dict[str, str]:
     """
     opts: dict[str, Any] = {"GDAL_NUM_THREADS": "1", **(cfg.stac.get("gdal") or {})}
     return {k: str(v) for k, v in opts.items()}
+
+
+def check_assets(
+    items: pystac.ItemCollection, bands: dict[str, str], quality: dict[str, str]
+) -> dict[str, str]:
+    """Quality layers present in every item; raise if a spectral band is missing.
+
+    odc-stac takes the asset list from the first item, and fills items without
+    an asset with 0, which would read as a valid class or 0 % probability (e.g.
+    CDSE Collection-1 items without CLD/SNW). Such quality layers are dropped
+    with a warning listing the affected items.
+    """
+    missing = {
+        key: [i.id for i in items if key not in i.assets]
+        for key in {*bands.values(), *quality.values()}
+    }
+    missing_bands = {
+        k: ids for k, ids in missing.items() if ids and k in bands.values()
+    }
+    if missing_bands:
+        raise ValueError(f"spectral bands missing in items: {missing_bands}")
+    kept = {}
+    for alias, key in quality.items():
+        ids = missing[key]
+        if not ids:
+            kept[alias] = key
+            continue
+        bar = "!" * 78
+        print(
+            f"\n{bar}\nWARNING: quality layer {alias!r} ({key}) dropped for this run,"
+            f" missing in {len(ids)} of {len(items)} items:\n  "
+            + "\n  ".join(ids)
+            + f"\n{bar}"
+        )
+    return kept
 
 
 def aggregates(cfg: DictConfig) -> bool:
