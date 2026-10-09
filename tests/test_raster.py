@@ -22,7 +22,10 @@ def test_one_tif_per_period_with_data(tmp_path) -> None:
         coords={"time": pd.to_datetime(["2023-06-01", "2023-07-01"])},
     )
 
-    paths = write_periods(ds, geobox, tmp_path)
+    baselines = pd.Series(
+        ["04.00,05.10", "05.10"], index=pd.to_datetime(["2023-06-01", "2023-07-01"])
+    )
+    paths = write_periods(ds, geobox, tmp_path, baselines)
 
     assert [p.name for p in paths] == ["2023-06-01.tif"]
     with rasterio.open(paths[0]) as src:
@@ -32,6 +35,7 @@ def test_one_tif_per_period_with_data(tmp_path) -> None:
         assert src.transform == geobox.affine
         np.testing.assert_allclose(src.read(1), red[0])
         np.testing.assert_array_equal(src.read(2), 3)
+        assert src.tags()["PROCESSING_BASELINE"] == "04.00,05.10"
 
 
 def test_per_item_cube_without_n_obs(tmp_path) -> None:
@@ -63,3 +67,23 @@ def test_per_item_cube_without_n_obs(tmp_path) -> None:
     with rasterio.open(paths[0]) as src:
         assert src.descriptions == ("red", "scl")
         np.testing.assert_array_equal(src.read(2), 4)
+        assert "PROCESSING_BASELINE" not in src.tags()
+
+
+def test_per_item_tif_carries_baseline(tmp_path) -> None:
+    geobox = GeoBox.from_bbox(
+        (500000, 6860000, 500060, 6860060), "EPSG:32632", resolution=30
+    )
+    ny, nx = geobox.shape
+    t = pd.Timestamp("2023-06-01T10:30:31")
+    ds = xr.Dataset(
+        {"red": (("time", "y", "x"), np.full((2, ny, nx), 0.1, dtype="float32"))},
+        coords={"time": [t, t + pd.Timedelta("5D")]},
+    )
+    # second item has no baseline (e.g. Landsat): no tag
+    paths = write_periods(ds, geobox, tmp_path, pd.Series({t: "05.10"}))
+
+    with rasterio.open(paths[0]) as src:
+        assert src.tags()["PROCESSING_BASELINE"] == "05.10"
+    with rasterio.open(paths[1]) as src:
+        assert "PROCESSING_BASELINE" not in src.tags()

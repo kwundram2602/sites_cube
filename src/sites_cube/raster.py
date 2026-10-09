@@ -7,13 +7,21 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 
 
-def write_periods(ds: xr.Dataset, geobox: GeoBox, out_dir: Path) -> list[Path]:
+def write_periods(
+    ds: xr.Dataset,
+    geobox: GeoBox,
+    out_dir: Path,
+    baselines: pd.Series | None = None,
+) -> list[Path]:
     """One GeoTIFF per time step: data variables, then `n_obs` if present, as float32.
 
     `ds` is a (time, y, x) cube on `geobox`, either reduced per period (with
     `n_obs`, file `YYYY-MM-DD.tif`, periods without valid observation skipped) or
     one slice per item (without `n_obs`, file named by sensing time, slices
     without any value skipped).
+
+    `baselines` maps a time step to its S2 processing baseline(s) (see
+    `stac.join_baselines`), written as metadata tag `PROCESSING_BASELINE`.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     per_item = "n_obs" not in ds
@@ -52,6 +60,8 @@ def write_periods(ds: xr.Dataset, geobox: GeoBox, out_dir: Path) -> list[Path]:
         with rasterio.open(path, "w", **profile) as dst:
             dst.write(data)
             dst.descriptions = tuple(names)
+            if baselines is not None and (b := baselines.get(pd.Timestamp(t))):
+                dst.update_tags(PROCESSING_BASELINE=b)
         paths.append(path)
     return paths
 

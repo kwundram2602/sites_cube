@@ -1,14 +1,17 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import pandas as pd
 import pystac
 from shapely.geometry import box, mapping
 
 from sites_cube.stac import (
+    baselines_by_time,
     build_filter,
     cloud_cover_property,
     count_report,
     dedupe_items,
     items_table,
+    join_baselines,
 )
 
 DT = datetime(2023, 6, 1, 10, 20, 31, tzinfo=UTC)
@@ -171,3 +174,72 @@ def test_empty_search_gives_empty_table_and_report() -> None:
     assert "items total:            0" in report
     assert list(by_month.columns) == ["year", "month", "n_items", "n_dates"]
     assert by_month.empty
+
+
+def _s2(id_: str, baseline: str, days: int = 0, tile: str = "32UPU") -> pystac.Item:
+    item = _item(
+        id_,
+        box(9, 50, 10, 51),
+        **{"s2:mgrs_tile": tile, "s2:processing_baseline": baseline},
+    )
+    item.datetime = DT + timedelta(days=days)
+    return item
+
+
+def test_report_lists_processing_baselines() -> None:
+    items = [_s2("a", "05.10"), _s2("b", "05.10", 5), _s2("c", "04.00", 10)]
+    report, _ = count_report(items_table(pystac.ItemCollection(items), lon=10.0))
+    block = report.split("items per processing baseline:\n")[1]
+    assert "04.00    1" in block
+    assert "05.10    2" in block
+
+
+def test_report_without_baselines_has_no_baseline_block() -> None:
+    item = _item("ls", box(9, 50, 10, 51), **{"landsat:wrs_path": "194"})
+    report, _ = count_report(items_table(pystac.ItemCollection([item]), lon=10.0))
+    assert "processing baseline" not in report
+
+
+def test_baselines_by_time_pc_and_cdse() -> None:
+    cdse = _item(
+        "cdse",
+        box(9, 50, 10, 51),
+        constellation="sentinel-2",
+        **{"processing:version": "05.11"},
+    )
+    cdse.datetime = DT + timedelta(days=1)
+    landsat = _item("ls", box(9, 50, 10, 51))
+    b = baselines_by_time(pystac.ItemCollection([_s2("pc", "05.10"), cdse, landsat]))
+    assert b.to_dict() == {
+        pd.Timestamp("2023-06-01T10:20:31"): "05.10",
+        pd.Timestamp("2023-06-02T10:20:31"): "05.11",
+    }
+
+
+def test_join_baselines_per_item_and_per_period() -> None:
+    items = [
+        _s2("a", "05.10"),
+        _s2("b", "05.11", tile="32UQU"),  # same sensing time, other tile
+        _s2("c", "04.00", 31),
+        _s2("d", "05.10", 40),
+    ]
+    b = baselines_by_time(pystac.ItemCollection(items))
+    assert join_baselines(b).to_dict() == {
+        pd.Timestamp("2023-06-01T10:20:31"): "05.10,05.11",
+        pd.Timestamp("2023-07-02T10:20:31"): "04.00",
+        pd.Timestamp("2023-07-11T10:20:31"): "05.10",
+    }
+    assert join_baselines(b, "MS", lon=10.0).to_dict() == {
+        pd.Timestamp("2023-06-01"): "05.10,05.11",
+        pd.Timestamp("2023-07-01"): "04.00,05.10",
+    }
+
+
+def test_join_baselines_skips_periods_without_items() -> None:
+    items = [_s2("a", "05.10"), _s2("b", "05.10", 70)]
+    b = baselines_by_time(pystac.ItemCollection(items))
+    assert (
+        list(join_baselines(b, "MS").index)
+        == pd.to_datetime(["2023-06-01", "2023-08-01"]).tolist()
+    )
+    assert join_baselines(baselines_by_time(pystac.ItemCollection([]))).empty

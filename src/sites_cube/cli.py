@@ -5,6 +5,7 @@ from typing import Any
 
 import geopandas as gpd
 import odc.stac
+import pandas as pd
 import pystac
 import xarray as xr
 from omegaconf import DictConfig
@@ -76,6 +77,7 @@ def main() -> None:
     )
     table.to_csv(out_dir / f"items_{name}.csv", index=False)
     by_month.to_csv(out_dir / f"item_counts_{name}.csv", index=False)
+    warn_mixed_baselines(table, cfg.harmonize_s2_offset)
 
     if cfg.count_only:
         return
@@ -108,6 +110,7 @@ def main() -> None:
         cfg.load.buffer_m,
         dict(cfg.load.chunks),
         bbox,
+        cloud_property,
     )
     write_raster = cfg.get("raster", {}).get("enabled", False)
     attempts = 1 + cfg.load.get("read_retries", 2)
@@ -128,10 +131,18 @@ def main() -> None:
         site_dir = out_dir / name / "sites_items"
         paths = aggregate.write_per_site(prepared, site_dir, dropna=True)
         print(f"wrote {len(paths)} site CSVs to {site_dir}")
+        if cfg.get("merged_csv", False):
+            path = aggregate.write_merged(
+                prepared, site_dir.with_suffix(".csv"), dropna=True
+            )
+            print(f"wrote merged CSV {path}")
         if write_raster:
             raster_dir = out_dir / name / "raster_items"
             tifs = raster.write_periods(
-                prepare(cube, cfg, lon), cube.odc.geobox, raster_dir
+                prepare(cube, cfg, lon),
+                cube.odc.geobox,
+                raster_dir,
+                stac.join_baselines(stac.baselines_by_time(items)),
             )
             print(f"wrote {len(tifs)} GeoTIFFs to {raster_dir}")
         return
@@ -142,12 +153,20 @@ def main() -> None:
     site_dir = out_dir / name / f"sites_{reducer}_{freq}"
     paths = aggregate.write_per_site(reduced, site_dir)
     print(f"wrote {len(paths)} site CSVs to {site_dir}")
+    if cfg.get("merged_csv", False):
+        path = aggregate.write_merged(reduced, site_dir.with_suffix(".csv"))
+        print(f"wrote merged CSV {path}")
 
     if write_raster:
         # same chain as the points: reflectance -> solar-day mean -> period reducer
         periods = aggregate.aggregate_time(prepare(cube, cfg, lon), freq, reducer)
         raster_dir = out_dir / name / f"raster_{reducer}_{freq}"
-        tifs = raster.write_periods(periods, cube.odc.geobox, raster_dir)
+        tifs = raster.write_periods(
+            periods,
+            cube.odc.geobox,
+            raster_dir,
+            stac.join_baselines(stac.baselines_by_time(items), freq, lon),
+        )
         print(f"wrote {len(tifs)} GeoTIFFs to {raster_dir}")
 
 
@@ -196,6 +215,25 @@ def check_assets(
             + f"\n{bar}"
         )
     return kept
+
+
+def warn_mixed_baselines(table: pd.DataFrame, harmonize_s2_offset: bool) -> None:
+    """Warn if the items come in more than one S2 processing baseline."""
+    counts = table["processing_baseline"].value_counts().sort_index()
+    if len(counts) < 2:
+        return
+    bar = "!" * 78
+    lines = [
+        f"WARNING: items with {len(counts)} processing baselines: "
+        + ", ".join(f"{b} ({n})" for b, n in counts.items())
+    ]
+    numeric = counts.index.astype(float)
+    if not harmonize_s2_offset and (numeric < 4).any() and (numeric >= 4).any():
+        lines.append(
+            "baselines before and from 04.00 mixed with `harmonize_s2_offset: false`:"
+            " the +1000 DN offset is not removed, values are not comparable"
+        )
+    print(f"\n{bar}\n" + "\n".join(lines) + f"\n{bar}")
 
 
 def aggregates(cfg: DictConfig) -> bool:

@@ -16,12 +16,10 @@ bands:
   green: B03_10m
   red: B04_10m
   rededge1: B05_20m
-  rededge2: B06_20m
-  rededge3: B07_20m
+  # rededge2: B06_20m
+  # rededge3: B07_20m
   nir: B08_10m
   nir08: B8A_20m
-  swir16: B11_20m
-  swir22: B12_20m
 nodata: 0
 # "s2_offset only for baseline ≥ 04.00".
 # reflectance = (DN - s2_offset) * scale + offset
@@ -34,10 +32,12 @@ harmonize_s2_offset: true  # subtract 1000 DN for processing baseline >= 04.00 (
 quality:
   scl: SCL_20m
   cld: CLD_20m  # cloud probability %
-  snw: SNW_20m  # snow probability %
+  snw: SNW_20m 
+  aot: AOT_20m
+  wvp: WVP_20m 
 
 time:
-  start: "2015-01-01"
+  start: "2016-01-01"
   end: "2016-12-31"
 
 max_cloud_cover: 30  # scene cloud cover filter in %, property per collection (stac.CLOUD_COVER_PROPERTY), null = off
@@ -54,7 +54,7 @@ load:
   # fixed load window instead of the buffered sites extent (sites outside are dropped):
   # [xmin, ymin, xmax, ymax] in load.crs on the resolution grid, or a path to a
   # vector/raster bounds file (reprojected, snapped outward to the grid); null = sites
-  bbox: [504800, 6859000, 515800, 6865850]
+  bbox: null #[504800, 6859000, 515800, 6865850]
   chunks: {x: 2048, y: 2048}
   read_retries: 2  # repeat the whole load after a failed raster read (e.g. truncated download)
 
@@ -66,12 +66,14 @@ aggregate:
 dask:
   distributed: true     # true = LocalCluster (processes), false = threaded scheduler
   num_threads: null      # threaded scheduler only, null = number of CPU cores
-  n_workers: 4           # LocalCluster only
+  n_workers: 2         # LocalCluster only
   threads_per_worker: 4  # LocalCluster only
   memory_limit: auto     # per worker, e.g. 4GiB
 
 raster:
   enabled: true  # also write the scenes over the sites window as GeoTIFF, one per item (aggregation off) or aggregate.freq period
+
+merged_csv: true  # also write one CSV with all sites next to the site CSV folder, e.g. <collection>/sites_items.csv
 
 count_only: false  # only search + report collection size, no pixel loading
 out_dir: out

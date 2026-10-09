@@ -71,5 +71,7 @@ dask:
 raster:
   enabled: true  # also write the reduced scenes over the sites window as GeoTIFF, one per aggregate.freq period
 
+merged_csv: false  # also write one CSV with all sites next to the site CSV folder, e.g. <collection>/sites_items.csv
+
 count_only: false  # only search + report collection size, no pixel loading
 out_dir: out

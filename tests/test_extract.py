@@ -10,11 +10,14 @@ import xarray as xr
 from rasterio.transform import from_origin
 from shapely.geometry import Point, box
 
+from sites_cube.aggregate import BASELINE_LABEL, ITEM_ATTRS, TILE
 from sites_cube.extract import (
     PLATFORM,
     S2_BASELINE,
     _baseline_property,
     fuse_solar_day,
+    item_attributes,
+    item_labels,
     platforms_by_time,
     sites_in_bbox,
     to_reflectance,
@@ -210,3 +213,107 @@ def test_sites_in_bbox_drops_outside_sites() -> None:
     ).to_crs(4326)
     kept = sites_in_bbox(sites, UTM, (504800, 6859000, 515800, 6865850))
     assert list(kept.index) == ["in"]
+
+
+def test_item_labels_by_position() -> None:
+    # two tiles of one datastrip share the sensing time
+    dt = datetime(2023, 6, 1, 10, 20, tzinfo=UTC)
+    items = [
+        pystac.Item(
+            id=tile,
+            geometry=None,
+            bbox=None,
+            datetime=dt,
+            properties={"s2:mgrs_tile": tile, "s2:processing_baseline": b},
+        )
+        for tile, b in [("32VNN", "05.10"), ("32VNM", "04.00")]
+    ]
+    assert item_labels(pystac.ItemCollection(items)) == {
+        TILE: ["32VNN", "32VNM"],
+        BASELINE_LABEL: ["05.10", "04.00"],
+    }
+
+
+def test_item_labels_without_baseline() -> None:
+    item = pystac.Item(
+        id="l8",
+        geometry=None,
+        bbox=None,
+        datetime=datetime(2023, 6, 1, tzinfo=UTC),
+        properties={"landsat:wrs_path": "196", "landsat:wrs_row": "024"},
+    )
+    assert item_labels(pystac.ItemCollection([item])) == {TILE: ["196024"]}
+
+
+def test_fuse_solar_day_joins_tiles_of_valid_items() -> None:
+    # same overpass, two tiles; site B lies outside the second tile
+    time = pd.to_datetime(["2023-06-01T10:20", "2023-06-01T10:20"])
+    ds = xr.Dataset(
+        {"red": (("time", "site"), np.array([[0.1, 0.2], [0.3, np.nan]], "float32"))},
+        coords={
+            "time": time,
+            "site": ["A", "B"],
+            TILE: ("time", ["32VNM", "32VNN"]),
+            BASELINE_LABEL: ("time", ["05.10", "05.10"]),
+        },
+    )
+    out = fuse_solar_day(ds, 10.0)
+    assert out[TILE].sel(time="2023-06-01").values.tolist() == ["32VNM,32VNN", "32VNM"]
+    assert out[BASELINE_LABEL].values.tolist() == [["05.10", "05.10"]]
+
+
+def test_fuse_solar_day_drops_labels_of_cubes() -> None:
+    cube = xr.Dataset(
+        {"red": (("time", "y", "x"), np.ones((2, 1, 1), dtype="float32"))},
+        coords={
+            "time": pd.to_datetime(["2023-06-01", "2023-06-02"]),
+            TILE: ("time", ["A", "B"]),
+        },
+    )
+    assert TILE not in fuse_solar_day(cube, 10.0).coords
+
+
+def test_item_attributes_by_position() -> None:
+    cdse = pystac.Item(
+        id="S2A_MSIL2A_x",
+        geometry=None,
+        bbox=None,
+        datetime=datetime(2023, 6, 1, tzinfo=UTC),
+        properties={
+            "sat:relative_orbit": 97,
+            "eo:cloud_cover": 0.0,
+            "view:sun_elevation": 45.5,
+            "view:sun_azimuth": 160.0,
+            "view:incidence_angle": 8.1,
+        },
+    )
+    landsat = pystac.Item(
+        id="LC08_x",
+        geometry=None,
+        bbox=None,
+        datetime=datetime(2023, 6, 2, tzinfo=UTC),
+        properties={"landsat:cloud_cover_land": 12.5, "view:sun_elevation": 50.0},
+    )
+    items = pystac.ItemCollection([cdse, landsat])
+    attrs = item_attributes(items, "eo:cloud_cover")
+    assert list(attrs) == list(ITEM_ATTRS)
+    assert attrs["item_id"] == ["S2A_MSIL2A_x", "LC08_x"]
+    assert attrs["orbit"] == ["97", ""]
+    # a real 0 % cloud cover stays 0, a missing value becomes NaN
+    assert attrs["cloud_cover"][0] == 0.0
+    assert np.isnan(attrs["cloud_cover"][1])
+    assert attrs["sun_elevation"] == [45.5, 50.0]
+    assert np.isnan(attrs["view_incidence"][1])
+    landsat_cloud = item_attributes(items, "landsat:cloud_cover_land")["cloud_cover"]
+    assert landsat_cloud[1] == 12.5
+
+
+def test_fuse_solar_day_drops_item_attributes() -> None:
+    ds = _ds([1, 2], None).astype("float32")
+    ds = ds.assign_coords(
+        item_id=("time", ["a", "b"]),
+        sun_elevation=("time", np.array([40.0, 41.0], "float32")),
+    )
+    out = fuse_solar_day(ds, 10.0)
+    assert "item_id" not in out.coords
+    assert "sun_elevation" not in out.coords

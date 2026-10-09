@@ -112,7 +112,7 @@ def dedupe_items(items: pystac.ItemCollection) -> pystac.ItemCollection:
     """
     groups: dict[tuple, list[pystac.Item]] = defaultdict(list)
     for item in items:
-        groups[(item.properties.get("platform"), item.datetime, _tile(item))].append(
+        groups[(item.properties.get("platform"), item.datetime, tile(item))].append(
             item
         )
     keep = []
@@ -133,10 +133,10 @@ def dedupe_items(items: pystac.ItemCollection) -> pystac.ItemCollection:
 def _rank(item: pystac.Item) -> tuple[float, str, str]:
     p = item.properties
     generated = p.get("s2:generation_time") or p.get("processing:datetime") or ""
-    return (float(_baseline(p) or 0), generated, item.id)
+    return (float(baseline(p) or 0), generated, item.id)
 
 
-def _baseline(p: dict) -> str | None:
+def baseline(p: dict) -> str | None:
     """S2 processing baseline, PC/Earth Search (`s2:`) or CDSE (`processing:version`)."""
     if "s2:processing_baseline" in p:
         return p["s2:processing_baseline"]
@@ -145,7 +145,7 @@ def _baseline(p: dict) -> str | None:
     return None
 
 
-def _tile(item: pystac.Item) -> str | None:
+def tile(item: pystac.Item) -> str | None:
     """S2 MGRS tile or Landsat path/row, from the STAC extension or `grid:code`."""
     p = item.properties
     if "s2:mgrs_tile" in p:
@@ -174,17 +174,15 @@ def items_table(
                 "id": item.id,
                 "datetime": item.datetime,
                 "platform": p.get("platform"),
-                "tile": _tile(item),
+                "tile": tile(item),
                 "orbit": p.get("sat:relative_orbit"),
                 "cloud_cover": p.get(cloud_property),
-                "processing_baseline": _baseline(p),
+                "processing_baseline": baseline(p),
             }
         )
     df = pd.DataFrame(rows, columns=ITEM_COLUMNS)
     df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_convert(None)
-    df.insert(
-        2, "solar_day", (df["datetime"] + timedelta(hours=lon / 15)).dt.normalize()
-    )
+    df.insert(2, "solar_day", _solar_day(pd.DatetimeIndex(df["datetime"]), lon))
     return df.sort_values("datetime").reset_index(drop=True)
 
 
@@ -208,7 +206,59 @@ def count_report(table: pd.DataFrame) -> tuple[str, pd.DataFrame]:
         f"date range:             {table['datetime'].min():%Y-%m-%d} .. {table['datetime'].max():%Y-%m-%d}",
         "items per tile:",
         table["tile"].value_counts().sort_index().to_string(),
+    ]
+    if table["processing_baseline"].notna().any():
+        lines += [
+            "items per processing baseline:",
+            table["processing_baseline"]
+            .value_counts(dropna=False)
+            .sort_index()
+            .to_string(),
+        ]
+    lines += [
         "items / days per year:",
         by_year.to_string(),
     ]
     return "\n".join(lines), by_month
+
+
+def baselines_by_time(items: pystac.ItemCollection) -> pd.Series:
+    """S2 processing baseline per item, indexed by naive UTC datetime; empty for non-S2."""
+    pairs = [
+        (pd.Timestamp(i.datetime).tz_convert(None), b)
+        for i in items
+        if i.datetime is not None and (b := baseline(i.properties)) is not None
+    ]
+    return pd.Series(
+        [b for _, b in pairs],
+        index=pd.DatetimeIndex([t for t, _ in pairs]),
+        dtype="object",
+    )
+
+
+def join_baselines(
+    baselines: pd.Series, freq: str | None = None, lon: float = 0.0
+) -> pd.Series:
+    """Distinct baselines per time step, comma-joined, e.g. "04.00,05.10".
+
+    Without `freq` per item datetime (tiles can share one). With `freq` per
+    period of the solar days, labelled like `aggregate.aggregate_time`.
+    """
+    if baselines.empty:
+        return pd.Series(dtype="object")
+    if freq is None:
+        key = baselines.index
+    else:
+        days = pd.Series(
+            baselines.to_numpy(),
+            index=_solar_day(pd.DatetimeIndex(baselines.index), lon),
+        )
+        baselines, key = days, pd.Grouper(freq=freq)
+    joined = baselines.groupby(key).agg(lambda s: ",".join(sorted(set(s))))
+    # periods without any item come back as empty string from resampling
+    return joined[joined != ""]
+
+
+def _solar_day(times: pd.DatetimeIndex, lon: float) -> pd.DatetimeIndex:
+    """Local solar date of naive UTC times, shifting by the site longitude."""
+    return (times + timedelta(hours=lon / 15)).normalize()

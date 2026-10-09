@@ -73,5 +73,7 @@ dask:
 raster:
   enabled: true  # one GeoTIFF per month over ~44 years would be large; enable for shorter periods
 
+merged_csv: false  # also write one CSV with all sites next to the site CSV folder, e.g. <collection>/sites_items.csv
+
 count_only: false  # only search + report collection size, no pixel loading
 out_dir: out

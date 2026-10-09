@@ -1,10 +1,16 @@
 from datetime import UTC, datetime
 
+import pandas as pd
 import pystac
 import pytest
 from omegaconf import OmegaConf
 
-from sites_cube.cli import check_assets, check_config, gdal_options
+from sites_cube.cli import (
+    check_assets,
+    check_config,
+    gdal_options,
+    warn_mixed_baselines,
+)
 
 
 def _item(id_: str, assets: list[str]) -> pystac.Item:
@@ -89,3 +95,25 @@ def test_check_assets_missing_spectral_band_raises() -> None:
     items = pystac.ItemCollection([_item("a", ["B08_10m"]), _item("b", [])])
     with pytest.raises(ValueError, match="B08_10m.*b"):
         check_assets(items, {"nir": "B08_10m"}, {})
+
+
+def _baselines(*values: str | None) -> pd.DataFrame:
+    return pd.DataFrame({"processing_baseline": list(values)})
+
+
+def test_warn_mixed_baselines(capsys) -> None:
+    warn_mixed_baselines(_baselines("05.10", "05.10", "05.11"), True)
+    out = capsys.readouterr().out
+    assert "WARNING: items with 2 processing baselines: 05.10 (2), 05.11 (1)" in out
+    assert "not comparable" not in out
+
+
+def test_warn_mixed_baselines_across_offset_without_harmonisation(capsys) -> None:
+    warn_mixed_baselines(_baselines("03.01", "05.10"), False)
+    assert "not comparable" in capsys.readouterr().out
+
+
+def test_single_or_no_baseline_is_silent(capsys) -> None:
+    warn_mixed_baselines(_baselines("05.10", "05.10"), True)
+    warn_mixed_baselines(_baselines(None, None), True)
+    assert capsys.readouterr().out == ""
