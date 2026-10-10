@@ -18,23 +18,23 @@ nodata: 0
 # reflectance = DN * scale + offset (Collection 2 Level-2 SR)
 scale: 0.0000275
 offset: -0.2
-harmonize_s2_offset: false  # S2 only
+#harmonize_s2_offset: false  # S2 only
 landsat:
   qa_mask: true          # load qa_pixel/qa_radsat; mask fill (always), the flags below, SR outside [0,1]
   # QA_PIXEL flags masked in all bands: dilated_cloud | cirrus (OLI only) | cloud | cloud_shadow | snow
   # all five = filtering of Roy et al. 2016;
   qa_pixel_flags: [dilated_cloud, cirrus, cloud, cloud_shadow, snow]
   mask_saturation: true  # QA_RADSAT: saturated band only, ETM+ dropped / OLI occluded pixel all bands
-  harmonize: oli         # oli | etm | null, ETM+/TM <-> OLI after Roy et al. 2016, Table 2
+  harmonize: null         # oli | etm | null, ETM+/TM <-> OLI after Roy et al. 2016, Table 2
   harmonize_method: ols  # ols (means, composites) | rma (thresholds, distributions)
   out_of_range: nan      # nan | clip | keep, for transformed values outside [0,1]
   tm_as_etm: true        # TM is not in the paper, transform it with the ETM+ coefficients (warns)
 
 # quality layers, alias -> asset key: written unscaled next to the bands (NaN outside
 # the item footprint); only with aggregate.enabled: false
-quality: null
-# quality:
-#   qa_pixel: qa_pixel  # independent of landsat.qa_mask
+#quality: null
+quality:
+  qa_pixel: qa_pixel  # independent of landsat.qa_mask
 
 time:
   start: "2009-07-01"
@@ -51,8 +51,11 @@ load:
   crs: EPSG:32632
   resolution: 30
   buffer_m: 50
+  # output pixel grid, must match the source grid or reads shift by half a pixel:
+  # edge = pixel edges on multiples of the resolution, center = pixel centers
+  anchor: center  # Landsat C2: pixel centers on multiples of 30 m
   # fixed load window instead of the buffered sites extent (sites outside are dropped):
-  # [xmin, ymin, xmax, ymax] in load.crs on the resolution grid, or a path to a
+  # [xmin, ymin, xmax, ymax] in load.crs on the pixel edges of the anchor grid, or a path to a
   # vector/raster bounds file (reprojected, snapped outward to the grid); null = sites
   bbox: null
   chunks: {x: 2048, y: 2048}

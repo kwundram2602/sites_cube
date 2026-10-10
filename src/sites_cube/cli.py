@@ -29,7 +29,10 @@ def main() -> None:
     cloud_property = stac.cloud_cover_property(name)
 
     sites = read_sites(cfg.sites.path, cfg.sites.layer, cfg.sites.id_field)
-    bbox = extract.window_bbox(cfg.load.get("bbox"), cfg.load.crs, cfg.load.resolution)
+    anchor = cfg.load.get("anchor", "edge")
+    bbox = extract.window_bbox(
+        cfg.load.get("bbox"), cfg.load.crs, cfg.load.resolution, anchor
+    )
     # the search covers the load window, by default the sites
     search_area = sites
     if bbox is not None:
@@ -111,6 +114,7 @@ def main() -> None:
         dict(cfg.load.chunks),
         bbox,
         cloud_property,
+        anchor,
     )
     write_raster = cfg.get("raster", {}).get("enabled", False)
     attempts = 1 + cfg.load.get("read_retries", 2)

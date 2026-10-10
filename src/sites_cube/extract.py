@@ -31,32 +31,49 @@ PLATFORM = "platform"
 RASTER_SUFFIXES = {".tif", ".tiff", ".vrt"}
 
 Bbox = tuple[float, float, float, float]
+# `load.anchor` -> pixel edge offset from multiples of the resolution, in pixels:
+# edge = edges on multiples (S2), center = centers on multiples (Landsat C2,
+# edges at ...15 for 30 m); passed to odc-stac as is
+ANCHORS = {"edge": 0.0, "center": 0.5}
+
+
+def grid_offset(anchor: str, resolution: float) -> float:
+    """Pixel edge offset of the `anchor` grid from multiples of `resolution`."""
+    if anchor not in ANCHORS:
+        raise ValueError(f"load.anchor {anchor!r} not one of {list(ANCHORS)}")
+    return ANCHORS[anchor] * resolution
 
 
 def window_bbox(
-    value: Sequence[float] | str | None, crs: str, resolution: float
+    value: Sequence[float] | str | None,
+    crs: str,
+    resolution: float,
+    anchor: str = "edge",
 ) -> Bbox | None:
     """Fixed load window in `crs` from `load.bbox`, None = derive it from the sites.
 
-    An array `[xmin, ymin, xmax, ymax]` must lie on the `resolution` grid, so the
-    window matches the source pixels exactly. A bounds file (vector or raster) is
-    reprojected and snapped outward to the grid, hand-drawn extents rarely align.
+    An array `[xmin, ymin, xmax, ymax]` must lie on the pixel edges of the
+    `anchor` grid, so the window matches the source pixels exactly. A bounds file
+    (vector or raster) is reprojected and snapped outward to the grid,
+    hand-drawn extents rarely align.
     """
+    off = grid_offset(anchor, resolution)
     if value is None:
         return None
     if isinstance(value, str):
         bounds = _file_bounds(Path(value), crs)
         return (
-            math.floor(bounds[0] / resolution) * resolution,
-            math.floor(bounds[1] / resolution) * resolution,
-            math.ceil(bounds[2] / resolution) * resolution,
-            math.ceil(bounds[3] / resolution) * resolution,
+            math.floor((bounds[0] - off) / resolution) * resolution + off,
+            math.floor((bounds[1] - off) / resolution) * resolution + off,
+            math.ceil((bounds[2] - off) / resolution) * resolution + off,
+            math.ceil((bounds[3] - off) / resolution) * resolution + off,
         )
     xmin, ymin, xmax, ymax = (float(v) for v in value)
-    off_grid = [v for v in (xmin, ymin, xmax, ymax) if v % resolution]
+    off_grid = [v for v in (xmin, ymin, xmax, ymax) if (v - off) % resolution]
     if off_grid:
         raise ValueError(
-            f"load.bbox {off_grid} not a multiple of the resolution {resolution}"
+            f"load.bbox {off_grid} not on the {resolution:g} m {anchor} grid "
+            f"(pixel edges at multiples of {resolution:g} + {off:g})"
         )
     return xmin, ymin, xmax, ymax
 
@@ -87,6 +104,7 @@ def load_points(
     chunks: dict[str, int | Literal["auto"]],
     bbox: Bbox | None = None,
     cloud_property: str = "eo:cloud_cover",
+    anchor: str = "edge",
 ) -> xr.Dataset:
     """Load every item separately over the window and sample the site pixels.
 
@@ -94,7 +112,16 @@ def load_points(
     applied before overlapping tiles are merged.
     """
     cube = load_cube(
-        items, bands, sites, crs, resolution, buffer_m, chunks, bbox, cloud_property
+        items,
+        bands,
+        sites,
+        crs,
+        resolution,
+        buffer_m,
+        chunks,
+        bbox,
+        cloud_property,
+        anchor,
     )
     # trigger the actual reads, result is a small (time, site) dataset
     return sample_points(cube, sites, crs).compute()
@@ -110,8 +137,13 @@ def load_cube(
     chunks: dict[str, int | Literal["auto"]],
     bbox: Bbox | None = None,
     cloud_property: str = "eo:cloud_cover",
+    anchor: str = "edge",
 ) -> xr.Dataset:
-    """Lazy (time, y, x) cube over `bbox` or the buffered sites bbox, one slice per item."""
+    """Lazy (time, y, x) cube over `bbox` or the buffered sites bbox, one slice per item.
+
+    `anchor` aligns the output grid with the source pixels (see `ANCHORS`); a
+    mismatch shifts nearest-neighbour reads by half a pixel.
+    """
     # 1. load window in the target grid CRS: fixed bbox (on the pixel grid, no
     #    buffer) or the buffered extent of the sites
     if bbox is None:
@@ -128,6 +160,7 @@ def load_cube(
         groupby="id",  # one time slice per item, no fusing of overlapping tiles
         crs=crs,
         resolution=resolution,
+        anchor=anchor,
         # the sites buffer keeps edge sites away from the window border
         x=(xmin, xmax),
         y=(ymin, ymax),

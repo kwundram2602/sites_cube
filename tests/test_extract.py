@@ -18,6 +18,7 @@ from sites_cube.extract import (
     fuse_solar_day,
     item_attributes,
     item_labels,
+    load_cube,
     platforms_by_time,
     sites_in_bbox,
     to_reflectance,
@@ -168,7 +169,7 @@ def test_window_bbox_array_is_used_exactly() -> None:
 
 
 def test_window_bbox_array_off_grid_raises() -> None:
-    with pytest.raises(ValueError, match="multiple of"):
+    with pytest.raises(ValueError, match="not on the 10 m edge grid"):
         window_bbox([504805, 6859000, 515800, 6865850], UTM, 10)
 
 
@@ -203,6 +204,104 @@ def test_window_bbox_raster_file_is_snapped(tmp_path) -> None:
         dst.write(np.zeros((1, 2, 3), dtype="uint8"))
     # raster extent 504801..504816 / 6859010..6859020
     assert window_bbox(str(path), UTM, 10) == (504800, 6859010, 504820, 6859020)
+
+
+def test_window_bbox_array_on_center_grid() -> None:
+    # Landsat C2: pixel centers on multiples of 30 m, edges at ...15
+    bbox = [504795, 6859005, 515805, 6865845]
+    assert window_bbox(bbox, UTM, 30, "center") == tuple(bbox)
+
+
+def test_window_bbox_array_off_center_grid_raises() -> None:
+    with pytest.raises(ValueError, match="not on the 30 m center grid"):
+        window_bbox([504780, 6859005, 515805, 6865845], UTM, 30, "center")
+
+
+def test_window_bbox_unknown_anchor_raises() -> None:
+    with pytest.raises(ValueError, match="load.anchor"):
+        window_bbox([504800, 6859000, 515800, 6865850], UTM, 10, "corner")
+
+
+def test_window_bbox_raster_file_is_snapped_to_center_grid(tmp_path) -> None:
+    path = tmp_path / "bounds.tif"
+    profile = {
+        "driver": "GTiff",
+        "width": 3,
+        "height": 2,
+        "count": 1,
+        "dtype": "uint8",
+        "crs": UTM,
+        "transform": from_origin(504801, 6859020, 5, 5),
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(np.zeros((1, 2, 3), dtype="uint8"))
+    # raster extent 504801..504816 / 6859010..6859020, outward to edges at ...15
+    assert window_bbox(str(path), UTM, 30, "center") == (
+        504795,
+        6859005,
+        504825,
+        6859035,
+    )
+
+
+def _native_item(
+    tmp_path, origin: tuple[float, float]
+) -> tuple[pystac.Item, np.ndarray]:
+    """Item with one 30 m band, every pixel a distinct value."""
+    data = np.arange(1, 401, dtype="uint16").reshape(20, 20)
+    path = tmp_path / "red.tif"
+    profile = {
+        "driver": "GTiff",
+        "width": 20,
+        "height": 20,
+        "count": 1,
+        "dtype": "uint16",
+        "crs": UTM,
+        "transform": from_origin(*origin, 30, 30),
+        "nodata": 0,
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(data[None])
+    x0, y1 = origin
+    footprint = gpd.GeoSeries([box(x0, y1 - 600, x0 + 600, y1)], crs=UTM).to_crs(4326)
+    item = pystac.Item(
+        id="ls",
+        geometry=footprint.iloc[0].__geo_interface__,
+        bbox=list(footprint.total_bounds),
+        datetime=datetime(2010, 7, 1, tzinfo=UTC),
+        properties={"platform": "landsat-5"},
+    )
+    item.add_asset("red", pystac.Asset(href=str(path), media_type="image/tiff"))
+    return item, data
+
+
+@pytest.mark.parametrize(
+    ("anchor", "origin"),
+    [("center", (500025, 6860025)), ("edge", (500010, 6860010))],
+)
+def test_load_cube_keeps_native_pixels(tmp_path, anchor, origin) -> None:
+    # Landsat C2 edges at ...15 (center grid), S2 edges on the grid (edge)
+    item, data = _native_item(tmp_path, origin)
+    x0, y1 = origin
+    sites = gpd.GeoDataFrame(geometry=[Point(x0 + 300, y1 - 300)], index=["A"], crs=UTM)
+    cube = load_cube(
+        pystac.ItemCollection([item]),
+        {"red": "red"},
+        sites,
+        UTM,
+        30,
+        100,
+        {},
+        anchor=anchor,
+    ).compute()
+    affine = cube.odc.geobox.affine
+    # output edges on the native grid: no half-pixel shift
+    assert (affine.c - x0) % 30 == 0 and (affine.f - y1) % 30 == 0
+    col, row = int((affine.c - x0) / 30), int((y1 - affine.f) / 30)
+    ny, nx = cube.sizes["y"], cube.sizes["x"]
+    np.testing.assert_array_equal(
+        cube["red"].isel(time=0).to_numpy(), data[row : row + ny, col : col + nx]
+    )
 
 
 def test_sites_in_bbox_drops_outside_sites() -> None:

@@ -49,8 +49,11 @@ load:
   crs: EPSG:32632
   resolution: 30
   buffer_m: 50
+  # output pixel grid, must match the source grid or reads shift by half a pixel:
+  # edge = pixel edges on multiples of the resolution, center = pixel centers
+  anchor: center  # Landsat C2: pixel centers on multiples of 30 m
   # fixed load window instead of the buffered sites extent (sites outside are dropped):
-  # [xmin, ymin, xmax, ymax] in load.crs on the resolution grid, or a path to a
+  # [xmin, ymin, xmax, ymax] in load.crs on the pixel edges of the anchor grid, or a path to a
   # vector/raster bounds file (reprojected, snapped outward to the grid); null = sites
   bbox: null
   chunks: {x: 2048, y: 2048}
